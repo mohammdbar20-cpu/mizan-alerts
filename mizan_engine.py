@@ -959,7 +959,7 @@ def _bos(candles: list[Candle], i: int) -> str:
 
 
 def once() -> dict:
-    hourly = fetch_hourly()
+    hourly = drop_incomplete(fetch_hourly(), 60 * 60 * 1000)
     h4 = drop_incomplete(resample(hourly, 4 * 60 * 60 * 1000), 4 * 60 * 60 * 1000)
     return analyze_hour(h4, hourly)
 
