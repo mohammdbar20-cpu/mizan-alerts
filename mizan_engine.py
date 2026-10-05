@@ -982,6 +982,35 @@ def allow_send(signal: str, key: str, previous: str) -> bool:
     return previous.rsplit("|", 1)[-1] != "WAIT"
 
 
+def deliver(sig: dict) -> None:
+    text = format_msg(sig)
+    copies = 3 if sig["signal"] in ("BUY", "SELL") else 1
+    sent = 0
+    last_error: Exception | None = None
+    for n in range(copies):
+        if n:
+            time.sleep(60)
+        try:
+            telegram_send(text)
+            sent += 1
+            print("sent", n + 1)
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+            last_error = exc
+            print("send failed", n + 1, exc)
+    if sent == 0 and last_error is not None:
+        raise last_error
+
+
+def manual_run() -> bool:
+    return os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+
+
+def confirm_arrival(sig: dict) -> None:
+    side = {"BUY": "شراء", "SELL": "بيع"}.get(sig["signal"], "انتظار")
+    telegram_send(f"ميزان وصل.\nالقرار الآن: {side}.\nلا صفقة جديدة، لأن القرار لم يتغير.")
+    print("ping sent")
+
+
 def notify_once(state_path: str) -> None:
     sig = once()
     key = f"{sig['time']}|{sig['signal']}"
@@ -991,8 +1020,9 @@ def notify_once(state_path: str) -> None:
         with open(state_path, encoding="utf-8") as fh:
             previous = fh.read().strip()
     if allow_send(sig["signal"], key, previous):
-        telegram_send(format_msg(sig))
-        print("sent")
+        deliver(sig)
+    elif manual_run():
+        confirm_arrival(sig)
     else:
         print("not sent")
     parent = os.path.dirname(state_path)
@@ -1012,9 +1042,8 @@ def main() -> None:
             print(datetime.now(timezone.utc).isoformat(), sig["signal"], sig.get("reason"))
             should = allow_send(sig["signal"], key, last_key)
             if should:
-                telegram_send(format_msg(sig))
+                deliver(sig)
                 last_key = key
-                print("  sent")
         except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
             print("error", exc)
         time.sleep(poll_seconds())
