@@ -828,6 +828,12 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
     }
     if len(h4) < 30 or len(hourly) < 40:
         return empty
+    now_ms = int(time.time() * 1000)
+    if now_ms < hourly[-1].time + 60 * 60 * 1000:
+        hourly = hourly[:-1]
+    if len(hourly) < 40:
+        empty["reason"] = "انتظار. شمعة الساعة لم تُغلق بعد."
+        return empty
     atr = wilder_atr(h4, 14)
     seen = _fit_channel(h4, atr, len(h4) - 1)
     if seen is None:
