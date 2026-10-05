@@ -970,6 +970,18 @@ def once() -> dict:
     return analyze_hour(h4, hourly)
 
 
+def allow_send(signal: str, key: str, previous: str) -> bool:
+    if key and key == previous:
+        return False
+    if signal != "WAIT":
+        return True
+    if not notify_wait():
+        return False
+    if not previous:
+        return True
+    return previous.rsplit("|", 1)[-1] != "WAIT"
+
+
 def notify_once(state_path: str) -> None:
     sig = once()
     key = f"{sig['time']}|{sig['signal']}"
@@ -978,12 +990,11 @@ def notify_once(state_path: str) -> None:
     if os.path.exists(state_path):
         with open(state_path, encoding="utf-8") as fh:
             previous = fh.read().strip()
-    should = key != previous and (sig["signal"] != "WAIT" or notify_wait())
-    if should:
+    if allow_send(sig["signal"], key, previous):
         telegram_send(format_msg(sig))
         print("sent")
     else:
-        print("unchanged, not sent")
+        print("not sent")
     parent = os.path.dirname(state_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
@@ -999,7 +1010,7 @@ def main() -> None:
             sig = once()
             key = f"{sig['time']}|{sig['signal']}"
             print(datetime.now(timezone.utc).isoformat(), sig["signal"], sig.get("reason"))
-            should = key != last_key and (sig["signal"] != "WAIT" or notify_wait())
+            should = allow_send(sig["signal"], key, last_key)
             if should:
                 telegram_send(format_msg(sig))
                 last_key = key
