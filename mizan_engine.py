@@ -65,14 +65,6 @@ def _get(url: str) -> bytes:
         return res.read()
 
 
-def spot_mid() -> float:
-    payload = json.loads(
-        _get("https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD")
-    )
-    row = payload[0]["spreadProfilePrices"][0]
-    return (float(row["bid"]) + float(row["ask"])) / 2
-
-
 def fetch_hourly() -> list[Candle]:
     url = (
         "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
@@ -91,18 +83,6 @@ def fetch_hourly() -> list[Candle]:
         lo = min(o, h, l, c)
         vol = q.get("volume", [0])[i] or 0
         out.append(Candle(int(t) * 1000, float(o), float(hi), float(lo), float(c), float(vol)))
-    if not out:
-        return out
-    try:
-        spot = spot_mid()
-        basis = out[-1].close - spot
-        if 0.05 < abs(basis) < 80:
-            out = [
-                Candle(c.time, c.open - basis, c.high - basis, c.low - basis, c.close - basis, c.volume)
-                for c in out
-            ]
-    except (urllib.error.URLError, TimeoutError, KeyError, ValueError, json.JSONDecodeError):
-        pass
     return out
 
 
