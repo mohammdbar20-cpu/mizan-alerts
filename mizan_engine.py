@@ -15,8 +15,7 @@ Configure the three constants below, then:
 
     python3 mizan_engine.py
 
-The loop fetches COMEX gold (GC=F), analyzes the last closed 4H bar,
-and sends BUY / SELL / WAIT when the signal changes.
+The loop fetches XAU/USD spot hourly candles and sends BUY / SELL / WAIT when the signal changes.
 """
 
 from __future__ import annotations
@@ -66,23 +65,26 @@ def _get(url: str) -> bytes:
 
 
 def fetch_hourly() -> list[Candle]:
-    url = (
-        "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
-        "?interval=60m&range=1y&includePrePost=false"
-    )
+    url = "https://biquote.io/api/XAUUSD/ohlc?interval=1h&limit=500"
     payload = json.loads(_get(url))
-    result = payload["chart"]["result"][0]
-    ts = result["timestamp"]
-    q = result["indicators"]["quote"][0]
     out: list[Candle] = []
-    for i, t in enumerate(ts):
-        o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
-        if None in (o, h, l, c):
-            continue
-        hi = max(o, h, l, c)
-        lo = min(o, h, l, c)
-        vol = q.get("volume", [0])[i] or 0
-        out.append(Candle(int(t) * 1000, float(o), float(hi), float(lo), float(c), float(vol)))
+    for bar in payload["bars"]:
+        opened = datetime.fromisoformat(str(bar["openTime"]).replace("Z", "+00:00"))
+        o = float(bar["open"])
+        h = float(bar["high"])
+        l = float(bar["low"])
+        c = float(bar["close"])
+        out.append(
+            Candle(
+                int(opened.timestamp() * 1000),
+                o,
+                max(o, h, l, c),
+                min(o, h, l, c),
+                c,
+                float(bar.get("tickVolume") or 0),
+            )
+        )
+    out.sort(key=lambda candle: candle.time)
     return out
 
 
