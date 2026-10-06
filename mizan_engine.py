@@ -970,7 +970,12 @@ def once() -> dict:
     return analyze_hour(h4, hourly)
 
 
+def trade_key_of(raw: str) -> str:
+    return raw.split("|zone=", 1)[0]
+
+
 def allow_send(signal: str, key: str, previous: str) -> bool:
+    previous = trade_key_of(previous)
     if key and key == previous:
         return False
     if signal != "WAIT":
@@ -983,22 +988,8 @@ def allow_send(signal: str, key: str, previous: str) -> bool:
 
 
 def deliver(sig: dict) -> None:
-    text = format_msg(sig)
-    copies = 3 if sig["signal"] in ("BUY", "SELL") else 1
-    sent = 0
-    last_error: Exception | None = None
-    for n in range(copies):
-        if n:
-            time.sleep(60)
-        try:
-            telegram_send(text)
-            sent += 1
-            print("sent", n + 1)
-        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
-            last_error = exc
-            print("send failed", n + 1, exc)
-    if sent == 0 and last_error is not None:
-        raise last_error
+    telegram_send(format_msg(sig))
+    print("sent")
 
 
 def manual_run() -> bool:
@@ -1030,6 +1021,26 @@ def notify_once(state_path: str) -> None:
         os.makedirs(parent, exist_ok=True)
     with open(state_path, "w", encoding="utf-8") as fh:
         fh.write(key)
+
+
+def clock(state_path: str) -> None:
+    if not os.path.exists(state_path):
+        sig = once()
+        key = f"{sig['time']}|{sig['signal']}"
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(state_path, "w", encoding="utf-8") as fh:
+            fh.write(key)
+        print("armed", key)
+    end = time.time() + 5.5 * 3600
+    while time.time() < end:
+        nxt = (int(time.time()) // 3600 + 1) * 3600 + 8
+        while time.time() < nxt:
+            time.sleep(min(20, nxt - time.time()))
+        if time.time() >= end:
+            break
+        notify_once(state_path)
 
 
 def main() -> None:
@@ -1069,7 +1080,11 @@ def serve_health(port: int) -> None:
 
 
 if __name__ == "__main__":
-    if "--once" in sys.argv:
+    if "--clock" in sys.argv:
+        if not bot_token() or not chat_id():
+            raise SystemExit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+        clock(os.environ.get("MIZAN_STATE", ".mizan-state"))
+    elif "--once" in sys.argv:
         if not bot_token() or not chat_id():
             raise SystemExit("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         notify_once(os.environ.get("MIZAN_STATE", ".mizan-state"))
