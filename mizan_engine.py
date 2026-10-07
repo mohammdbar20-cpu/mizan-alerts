@@ -39,6 +39,63 @@ TELEGRAM_CHAT_ID = ""  # numeric chat id
 POLL_SECONDS = 180
 NOTIFY_WAIT = True
 
+# قناة المستخدم على 4 ساعات، من شارت 7 أكتوبر 2026.
+# السعر عند 14:00 بتوقيت ألمانيا، والميل بالدولار في اليوم.
+PLAN_ANCHOR_MS = 1791374400000
+PLAN_MARGIN = 2.0
+PLAN_UPPER = (4185.84, -10.62)
+PLAN_MID = (4122.95, -11.07)
+PLAN_LOWER = (3995.15, -11.42)
+PLAN_BLUES = (4150.0, 4015.0, 3925.0)
+
+
+def _plan_at(spec: tuple[float, float], time_ms: int) -> float:
+    price, per_day = spec
+    return price + per_day * (time_ms - PLAN_ANCHOR_MS) / 86400000
+
+
+def midline_lean(high: float, low: float, close: float, open_ms: int) -> str | None:
+    """لمس خط الوسط ثم الإغلاق في جهة: ترجيح، لا أمر."""
+    mid = _plan_at(PLAN_MID, open_ms + 60 * 60 * 1000)
+    if high < mid - PLAN_MARGIN or low > mid + PLAN_MARGIN:
+        return None
+    if close < mid:
+        return "ترجيح هبوط. السعر لمس خط الوسط وأغلق تحته. ليس أمر بيع."
+    if close > mid:
+        return "ترجيح صعود. السعر لمس خط الوسط وأغلق فوقه. ليس أمر شراء."
+    return None
+
+
+def plan_veto(side: str, close: float, open_ms: int, bos: str) -> str | None:
+    """قرار 2. None يعني أن القرار 1 مسموح."""
+    t = open_ms + 60 * 60 * 1000
+    upper, mid, lower = _plan_at(PLAN_UPPER, t), _plan_at(PLAN_MID, t), _plan_at(PLAN_LOWER, t)
+
+    def near(level: float) -> bool:
+        return abs(close - level) <= PLAN_MARGIN
+
+    if near(upper):
+        if side == "SELL" and bos == "bearish":
+            return None
+        return "انتظار. السعر عند سقف قناتك، والبيع يحتاج كسر هيكل هابط."
+    if near(lower):
+        if side == "BUY" and bos == "bullish":
+            return None
+        return "انتظار. السعر عند أرض قناتك، والشراء يحتاج كسر هيكل صاعد."
+    if close < mid and side == "BUY":
+        return "انتظار. السعر تحت الخط الأخضر ولم يغلق فوقه."
+    if close > mid and side == "SELL":
+        return "انتظار. السعر فوق الخط الأخضر، والخط أرض."
+    for level in PLAN_BLUES:
+        if not near(level):
+            continue
+        if close <= level and side == "BUY":
+            return f"انتظار. السعر عند الخط الأزرق {level:.0f} وهو سقف."
+        if close > level and side == "SELL":
+            return f"انتظار. السعر عند الخط الأزرق {level:.0f} وهو أرض."
+    return None
+
+
 ACCOUNT_BALANCE = 10000.0
 RISK_PCT = 0.02
 CONTRACT_SIZE = 100.0  # 100 = standard lot
@@ -735,7 +792,7 @@ def format_msg(s: dict) -> str:
     side = {"BUY": "شراء BUY", "SELL": "بيع SELL"}.get(s["signal"], "انتظار WAIT")
     when = datetime.fromtimestamp(s["time"] / 1000, tz=BERLIN).strftime("%Y-%m-%d %H:%M")
     lines = [
-        "ميزان — XAU/USD",
+        "BARAZZI - XAU",
         "",
         f"الإشارة: {side}",
         f"السعر: {s.get('close')}",
@@ -834,10 +891,23 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         side = "BUY"
     elif body >= 1.5 and pos >= 0.55 and hour.close < hour.open and hour.close <= candle_mid and hist[h] < hist[h - 1]:
         side = "SELL"
+    lean = midline_lean(hour.high, hour.low, hour.close, hour.time)
+    if lean:
+        empty["time"] = hour.time
+        empty["close"] = round(hour.close, 2)
+        empty["reason"] = lean
+        return empty
     if side is None:
         empty["reason"] = "انتظار. لا شمعة ساعة في نصف القناة المناسب مع ماكد في نفس الجهة."
         return empty
     structure = _bos(hourly, h)
+    veto = plan_veto(side, hour.close, hour.time, structure)
+    if veto:
+        empty["time"] = hour.time
+        empty["close"] = round(hour.close, 2)
+        empty["reason"] = veto
+        empty["bos"] = structure
+        return empty
     agrees = (side == "BUY" and structure == "bullish") or (side == "SELL" and structure == "bearish")
     sign = 1 if side == "BUY" else -1
     entry = hour.close
@@ -980,7 +1050,7 @@ def manual_run() -> bool:
 
 def confirm_arrival(sig: dict) -> None:
     side = {"BUY": "شراء", "SELL": "بيع"}.get(sig["signal"], "انتظار")
-    telegram_send(f"ميزان وصل.\nالقرار الآن: {side}.\nلا صفقة جديدة، لأن القرار لم يتغير.")
+    telegram_send(f"BARAZZI - XAU وصل.\nالقرار الآن: {side}.\nلا صفقة جديدة، لأن القرار لم يتغير.")
     print("ping sent")
 
 
