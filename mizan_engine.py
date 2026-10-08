@@ -790,15 +790,43 @@ def analyze(h4: list[Candle], d1: list[Candle], hourly: list[Candle] | None = No
     }
 
 
+def _state_line(s: dict) -> str:
+    signal = s.get("signal")
+    reason = s.get("reason") or ""
+    if signal == "BUY":
+        head = "شراء الآن."
+    elif signal == "SELL":
+        head = "بيع الآن."
+    elif "ترجيح هبوط" in reason:
+        head = "لا أمر. ترجيح هبوط فقط."
+    else:
+        head = "لا أمر."
+    lean = ""
+    gauge = s.get("gauge") or ""
+    if "ترجيح الشراء:" in gauge and "ترجيح البيع:" in gauge:
+        buy = gauge.split("ترجيح الشراء:", 1)[1].split("%", 1)[0].strip()
+        sell = gauge.split("ترجيح البيع:", 1)[1].split("%", 1)[0].strip()
+        try:
+            buy_n, sell_n = int(buy), int(sell)
+        except ValueError:
+            buy_n = sell_n = 50
+        if buy_n > sell_n:
+            lean = f"الميل للشرائية {buy_n}٪."
+        elif sell_n > buy_n:
+            lean = f"الميل للبيعية {sell_n}٪."
+        else:
+            lean = "الميل متعادل."
+    return f"الحالة الآن: {head} {s.get('d2', 'لا قراءة')} القرار الأول قال {s.get('d1', 'لا قراءة')}. {lean}".strip()
+
+
 def format_msg(s: dict) -> str:
     side = {"BUY": "شراء BUY", "SELL": "بيع SELL"}.get(s["signal"], "انتظار WAIT")
-    when = datetime.fromtimestamp(s["time"] / 1000, tz=BERLIN).strftime("%Y-%m-%d %H:%M")
     lines = [
         "BARAZZI - XAU",
         "",
         f"الإشارة: {side}",
-        f"السعر: {s.get('close')}",
-        f"الشمعة: {when} بتوقيت ألمانيا",
+        f"القرار 1: {s.get('d1', 'لا قراءة')}",
+        f"القرار 2: {s.get('d2', 'لا قراءة')}",
     ]
     if s["signal"] != "WAIT":
         lines += [
@@ -810,7 +838,9 @@ def format_msg(s: dict) -> str:
             f"إذا كسر الهيكل معك: {s.get('tp2')}",
             "الحجم: 0.50 لوت",
         ]
-    lines += ["", s.get("reason", "")]
+    lines += ["", _state_line(s)]
+    if s.get("gauge"):
+        lines += ["", s["gauge"]]
     return "\n".join(lines)
 
 
@@ -854,6 +884,38 @@ def telegram_send(text: str) -> None:
         res.read()
 
 
+def _gauge(hour: Candle, pos: float, hist_now: float, hist_prev: float, bos: str, signal: str, reason: str) -> str:
+    mid = _plan_at(PLAN_MID, hour.time + 60 * 60 * 1000)
+    candle_mid = (hour.high + hour.low) / 2
+    votes = [
+        (3.0, 1 if hour.close > mid else -1 if hour.close < mid else 0),
+        (2.0, 1 if pos <= 0.45 else -1 if pos >= 0.55 else 0),
+        (2.0, 1 if hist_now > hist_prev else -1 if hist_now < hist_prev else 0),
+        (2.0, 1 if bos == "bullish" else -1 if bos == "bearish" else 0),
+        (0.5 if abs(hour.close - hour.open) < 1.5 else 1.0,
+         1 if hour.close > hour.open and hour.close >= candle_mid else -1 if hour.close < hour.open and hour.close <= candle_mid else 0),
+    ]
+    num = sum(w * v for w, v in votes)
+    den = sum(w for w, _v in votes)
+    buy = int(50.0 + (50.0 * num / den if den else 0.0) + 0.5)
+    text = reason or ""
+    direction = 1 if signal == "BUY" or "ترجيح صعود" in text else -1 if signal == "SELL" or "ترجيح هبوط" in text else 0
+    if direction > 0:
+        buy = max(buy, 55)
+    elif direction < 0:
+        buy = min(buy, 45)
+    buy = max(0, min(100, buy))
+    sell = 100 - buy
+    if buy > 50 and direction >= 0 and (direction > 0 or buy >= 55):
+        icon = "🟢"
+    elif buy < 50 and direction <= 0 and (direction < 0 or buy <= 45):
+        icon = "🔴"
+    else:
+        icon = "⚪"
+    green = math.ceil(buy / 10) if buy > 50 else math.floor(buy / 10) if buy < 50 else 5
+    return f"{icon} ترجيح البيع: {sell}% • ترجيح الشراء: {buy}%\n{'🟩' * green}{'🟥' * (10 - green)}"
+
+
 def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
     empty = {
         "signal": "WAIT",
@@ -866,6 +928,8 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         "tp2": None,
         "stay": "—",
         "bos": "neutral",
+        "d1": "لا قراءة",
+        "d2": "لا قراءة",
     }
     if len(h4) < 30 or len(hourly) < 40:
         return empty
@@ -893,22 +957,38 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         side = "BUY"
     elif body >= 1.5 and pos >= 0.55 and hour.close < hour.open and hour.close <= candle_mid and hist[h] < hist[h - 1]:
         side = "SELL"
+    d1 = {"BUY": "شراء", "SELL": "بيع"}.get(side or "", "لا شراء ولا بيع")
+    line_px = _plan_at(PLAN_MID, hour.time + 60 * 60 * 1000)
+    gap = hour.close - line_px
+    where = f"الإغلاق {'فوق' if gap > 0 else 'تحت'} الخط الأخضر بـ {abs(gap):.2f}."
+    structure = _bos(hourly, h)
     lean = midline_lean(hour.high, hour.low, hour.close, hour.time)
+    gauge = _gauge(hour, pos, hist[h], hist[h - 1], structure, "WAIT", lean or "")
     if lean:
         empty["time"] = hour.time
         empty["close"] = round(hour.close, 2)
         empty["reason"] = lean
+        empty["d1"] = d1
+        empty["d2"] = lean
+        empty["bos"] = structure
+        empty["gauge"] = gauge
         return empty
     if side is None:
         empty["reason"] = "انتظار. لا شمعة ساعة في نصف القناة المناسب مع ماكد في نفس الجهة."
+        empty["d1"] = d1
+        empty["d2"] = f"لا منع. {where}"
+        empty["bos"] = structure
+        empty["gauge"] = _gauge(hour, pos, hist[h], hist[h - 1], structure, "WAIT", "")
         return empty
-    structure = _bos(hourly, h)
     veto = plan_veto(side, hour.close, hour.time, structure)
     if veto:
         empty["time"] = hour.time
         empty["close"] = round(hour.close, 2)
         empty["reason"] = veto
         empty["bos"] = structure
+        empty["d1"] = d1
+        empty["d2"] = veto
+        empty["gauge"] = _gauge(hour, pos, hist[h], hist[h - 1], structure, "WAIT", veto)
         return empty
     agrees = (side == "BUY" and structure == "bullish") or (side == "SELL" and structure == "bearish")
     sign = 1 if side == "BUY" else -1
@@ -937,6 +1017,9 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         "tp2": round(tp2, 2),
         "stay": stay,
         "bos": structure,
+        "d1": d1,
+        "d2": f"موافق. {where}",
+        "gauge": _gauge(hour, pos, hist[h], hist[h - 1], structure, side, verb),
     }
 
 
@@ -1030,15 +1113,7 @@ def trade_key_of(raw: str) -> str:
 
 def allow_send(signal: str, key: str, previous: str) -> bool:
     previous = trade_key_of(previous)
-    if key and key == previous:
-        return False
-    if signal != "WAIT":
-        return True
-    if not notify_wait():
-        return False
-    if not previous:
-        return True
-    return previous.rsplit("|", 1)[-1] != "WAIT"
+    return bool(key) and key != previous
 
 
 def deliver(sig: dict) -> None:
