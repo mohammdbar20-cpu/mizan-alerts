@@ -55,14 +55,16 @@ def _plan_at(spec: tuple[float, float], time_ms: int) -> float:
 
 
 def midline_lean(high: float, low: float, close: float, open_ms: int) -> str | None:
-    """لمس خط الوسط ثم الإغلاق في جهة: ترجيح، لا أمر."""
+    """لمس الخط والإغلاق تحته بقليل: ترجيح هبوط. أي إغلاق فوق الخط اختراق."""
     mid = _plan_at(PLAN_MID, open_ms + 60 * 60 * 1000)
+    if close > mid:
+        return None
+    if abs(close - mid) > PLAN_MARGIN:
+        return None
     if high < mid - PLAN_MARGIN or low > mid + PLAN_MARGIN:
         return None
     if close < mid:
         return "ترجيح هبوط. السعر لمس خط الوسط وأغلق تحته. ليس أمر بيع."
-    if close > mid:
-        return "ترجيح صعود. السعر لمس خط الوسط وأغلق فوقه. ليس أمر شراء."
     return None
 
 
