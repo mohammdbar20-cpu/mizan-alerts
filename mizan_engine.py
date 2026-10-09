@@ -164,6 +164,12 @@ def live_spot() -> float | None:
             if isinstance(val, (int, float)) and 1000 < float(val) < 20000:
                 return round(float(val), 2)
     except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, ValueError):
+        pass
+    try:
+        bars = fetch_bars("5m", 3)
+        if bars:
+            return round(bars[-1].close, 2)
+    except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, ValueError):
         return None
     return None
 
@@ -178,11 +184,19 @@ def crowd_line() -> str | None:
         sell = int(round(float(last["short_pct"])))
     except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError, TypeError, ValueError):
         return None
-    return f"الناس: شراء {buy}% · بيع {sell}%"
+    if buy > sell:
+        icon = "🟢"
+    elif sell > buy:
+        icon = "🔴"
+    else:
+        icon = "⚪"
+    green = math.ceil(buy / 10) if buy > 50 else math.floor(buy / 10) if buy < 50 else 5
+    green = max(0, min(10, green))
+    return f"{icon} الناس بيع: {sell}% • الناس شراء: {buy}%\n{'🟩' * green}{'🟥' * (10 - green)}"
 
 
-def fetch_hourly() -> list[Candle]:
-    url = "https://biquote.io/api/XAUUSD/ohlc?interval=1h&limit=500"
+def fetch_bars(interval: str, limit: int = 160) -> list[Candle]:
+    url = f"https://biquote.io/api/XAUUSD/ohlc?interval={interval}&limit={limit}"
     payload = json.loads(_get(url))
     out: list[Candle] = []
     for bar in payload["bars"]:
@@ -203,6 +217,10 @@ def fetch_hourly() -> list[Candle]:
         )
     out.sort(key=lambda candle: candle.time)
     return out
+
+
+def fetch_hourly() -> list[Candle]:
+    return fetch_bars("1h", 500)
 
 
 def resample(candles: list[Candle], period_ms: int) -> list[Candle]:
@@ -859,22 +877,7 @@ def _state_line(s: dict) -> str:
         head = "لا أمر. ترجيح هبوط فقط."
     else:
         head = "لا أمر."
-    lean = ""
-    gauge = s.get("gauge") or ""
-    if "ترجيح الشراء:" in gauge and "ترجيح البيع:" in gauge:
-        buy = gauge.split("ترجيح الشراء:", 1)[1].split("%", 1)[0].strip()
-        sell = gauge.split("ترجيح البيع:", 1)[1].split("%", 1)[0].strip()
-        try:
-            buy_n, sell_n = int(buy), int(sell)
-        except ValueError:
-            buy_n = sell_n = 50
-        if buy_n > sell_n:
-            lean = f"الميل للشرائية {buy_n}٪."
-        elif sell_n > buy_n:
-            lean = f"الميل للبيعية {sell_n}٪."
-        else:
-            lean = "الميل متعادل."
-    return f"الحالة الآن: {head} {s.get('d2', 'لا قراءة')} القرار الأول قال {s.get('d1', 'لا قراءة')}. {lean}".strip()
+    return f"الحالة الآن: {head} {s.get('d2', 'لا قراءة')} القرار الأول قال {s.get('d1', 'لا قراءة')}."
 
 
 def format_msg(s: dict) -> str:
@@ -887,8 +890,6 @@ def format_msg(s: dict) -> str:
         f"القرار 1: {s.get('d1', 'لا قراءة')}",
         f"القرار 2: {s.get('d2', 'لا قراءة')}",
     ]
-    if s.get("crowd"):
-        lines.append(s["crowd"])
     if s["signal"] != "WAIT":
         lines += [
             "",
@@ -902,6 +903,8 @@ def format_msg(s: dict) -> str:
     lines += ["", _state_line(s)]
     if s.get("gauge"):
         lines += ["", s["gauge"]]
+    if s.get("crowd"):
+        lines += ["", s["crowd"]]
     return "\n".join(lines)
 
 
@@ -943,6 +946,189 @@ def telegram_send(text: str) -> None:
     )
     with urllib.request.urlopen(req, timeout=30) as res:
         res.read()
+
+
+def _local_where(close: float, flor: float, ceil: float) -> str:
+    span = ceil - flor
+    pos = (close - flor) / span if span else 0.5
+    pad = max(0.8, span * 0.08)
+    if close < flor:
+        return f"السعر تحت أرض القناة بـ {flor - close:.2f}. الأرض {flor:.2f} والسقف {ceil:.2f}."
+    if close > ceil:
+        return f"السعر فوق سقف القناة بـ {close - ceil:.2f}. السقف {ceil:.2f} والأرض {flor:.2f}."
+    if abs(close - ceil) <= pad:
+        return f"السعر عند سقف القناة ({ceil:.2f})."
+    if abs(close - flor) <= pad:
+        return f"السعر عند أرض القناة ({flor:.2f})."
+    if pos >= 0.66:
+        return f"السعر في أعلى القناة، تحت السقف بـ {ceil - close:.2f}. السقف {ceil:.2f} والأرض {flor:.2f}."
+    if pos <= 0.34:
+        return f"السعر في أسفل القناة، فوق الأرض بـ {close - flor:.2f}. الأرض {flor:.2f} والسقف {ceil:.2f}."
+    return f"السعر في وسط القناة. تحت السقف بـ {ceil - close:.2f} وفوق الأرض بـ {close - flor:.2f}."
+
+
+def _small_gauge(close: float, mid: float, pos: float, hist_now: float, hist_prev: float, bos: str, rsi: float | None, signal: str) -> str:
+    votes = [
+        (3.0, 1 if close > mid else -1 if close < mid else 0),
+        (2.0, 1 if pos <= 0.45 else -1 if pos >= 0.55 else 0),
+        (2.0, 1 if hist_now > hist_prev else -1 if hist_now < hist_prev else 0),
+        (2.0, 1 if bos == "bullish" else -1 if bos == "bearish" else 0),
+        (1.0, 1 if rsi is not None and rsi >= 55 else -1 if rsi is not None and rsi <= 45 else 0),
+    ]
+    num = sum(w * v for w, v in votes)
+    den = sum(w for w, _v in votes)
+    buy = int(50.0 + (50.0 * num / den if den else 0.0) + 0.5)
+    if signal == "BUY":
+        buy = max(buy, 55)
+    elif signal == "SELL":
+        buy = min(buy, 45)
+    buy = max(0, min(100, buy))
+    sell = 100 - buy
+    icon = "🟢" if buy > 50 else "🔴" if buy < 50 else "⚪"
+    green = math.ceil(buy / 10) if buy > 50 else math.floor(buy / 10) if buy < 50 else 5
+    return f"{icon} ترجيح البيع: {sell}% • ترجيح الشراء: {buy}%\n{'🟩' * green}{'🟥' * (10 - green)}"
+
+
+def _small_signal(interval: str, period_ms: int, title: str, min_body: float, min_span: float) -> list[str]:
+    raw = fetch_bars(interval, 180)
+    if len(raw) < 50:
+        return [title, "الإشارة: انتظار WAIT", "القرار 1: لا قراءة", "القرار 2: البيانات غير كافية."]
+    now = int(time.time() * 1000)
+    closed = raw[:-1] if now < raw[-1].time + period_ms else raw
+    atr = wilder_atr(closed, 14)
+    seen = _fit_channel(closed, atr, len(closed) - 1, min_span=min_span, tol_floor=max(0.6, min_span * 0.12), max_outside=3)
+    bar = closed[-1]
+    _, _, hist = macd_hist([c.close for c in closed])
+    rsi_all = wilder_rsi([c.close for c in closed])
+    rsi = next((v for v in reversed(rsi_all) if not math.isnan(v)), None)
+    structure = _bos(closed, len(closed) - 1)
+    if seen is None:
+        gauge = _small_gauge(bar.close, bar.close, 0.5, hist[-1], hist[-2], structure, rsi, "WAIT")
+        return [title, "الإشارة: انتظار WAIT", "القرار 1: لا شراء ولا بيع", "القرار 2: لا قناة واضحة على هذا الشارت.", "", "الحالة الآن: لا أمر.", "", gauge]
+    flor, ceil, mid = seen
+    span = ceil - flor
+    pos = (bar.close - flor) / span if span else 0.5
+    body = abs(bar.close - bar.open)
+    candle_mid = (bar.high + bar.low) / 2
+    side = None
+    if body >= min_body and pos <= 0.45 and bar.close > bar.open and bar.close >= candle_mid and hist[-1] > hist[-2] and (rsi is None or rsi < 75):
+        side = "BUY"
+    elif body >= min_body and pos >= 0.55 and bar.close < bar.open and bar.close <= candle_mid and hist[-1] < hist[-2] and (rsi is None or rsi > 25):
+        side = "SELL"
+    where = _local_where(bar.close, flor, ceil)
+    d1 = {"BUY": "شراء", "SELL": "بيع"}.get(side or "", "لا شراء ولا بيع")
+    rsi_bit = f" RSI {rsi:.0f}." if rsi is not None else ""
+    macd_bit = "ماكد صاعد." if hist[-1] > hist[-2] else "ماكد هابط." if hist[-1] < hist[-2] else "ماكد مسطح."
+    bos_bit = {"bullish": " كسر صاعد.", "bearish": " كسر هابط."}.get(structure, "")
+    if side == "BUY" and pos >= 0.8:
+        side = None
+        d2 = f"انتظار. السعر عند سقف هذه القناة. {macd_bit}{rsi_bit}"
+    elif side == "SELL" and pos <= 0.2:
+        side = None
+        d2 = f"انتظار. السعر عند أرض هذه القناة. {macd_bit}{rsi_bit}"
+    elif side:
+        d2 = f"موافق. {where} {macd_bit}{bos_bit}{rsi_bit}"
+    else:
+        d2 = f"لا منع. {where} {macd_bit}{bos_bit}{rsi_bit}"
+    signal = side or "WAIT"
+    word = {"BUY": "شراء BUY", "SELL": "بيع SELL"}.get(signal, "انتظار WAIT")
+    state = {"BUY": "شراء الآن.", "SELL": "بيع الآن."}.get(signal, "لا أمر.")
+    lines = [
+        title,
+        f"الإشارة: {word}",
+        f"القرار 1: {d1}",
+        f"القرار 2: {d2}",
+    ]
+    if signal != "WAIT":
+        sign = 1 if signal == "BUY" else -1
+        risk_cap = 4.0 if period_ms >= 15 * 60 * 1000 else 2.5
+        stop = (min(bar.low, bar.close - 1.2) - 0.3) if signal == "BUY" else (max(bar.high, bar.close + 1.2) + 0.3)
+        if abs(bar.close - stop) < 1.2:
+            stop = bar.close - sign * 1.2
+        if abs(bar.close - stop) > risk_cap:
+            stop = bar.close - sign * risk_cap
+        room = (ceil - bar.close) if signal == "BUY" else (bar.close - flor)
+        travel = max(1.5, min(room * 0.5, risk_cap))
+        tp = bar.close + sign * travel
+        lines += [
+            "",
+            f"إغلاق الشمعة: {bar.close:.2f}",
+            f"حد الخطر: {stop:.2f} — لا تخرج فور لمسه",
+            f"الخروج المقصود: {tp:.2f}",
+        ]
+    lines += ["", f"الحالة الآن: {state} {d2} القرار الأول قال {d1}.", "", _small_gauge(bar.close, mid, pos, hist[-1], hist[-2], structure, rsi, signal)]
+    return lines
+
+
+def moment_report() -> str:
+    try:
+        spot = live_spot()
+        lines = [
+            "BARAZZI - XAU",
+            "تقرير عند الطلب",
+            "",
+            f"السعر الآن: {spot if spot is not None else '—'} سبوت",
+            "",
+            *_small_signal("15m", 15 * 60 * 1000, "شارت 15 دقيقة", 1.0, 8.0),
+            "",
+            *_small_signal("5m", 5 * 60 * 1000, "شارت 5 دقائق", 0.4, 4.0),
+        ]
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"BARAZZI - XAU\nالتقرير لم يكتمل.\n{type(exc).__name__}"
+
+
+def _tg_updates(offset: int | None, timeout: int) -> list:
+    token = bot_token()
+    query = f"timeout={timeout}"
+    if offset is not None:
+        query += f"&offset={offset}"
+    url = f"https://api.telegram.org/bot{token}/getUpdates?{query}"
+    req = urllib.request.Request(url, headers=UA)
+    with urllib.request.urlopen(req, timeout=timeout + 10) as res:
+        payload = json.loads(res.read())
+    if not payload.get("ok"):
+        return []
+    return payload.get("result") or []
+
+
+_LISTENING = False
+
+
+def listen_commands() -> None:
+    offset = None
+    try:
+        old = _tg_updates(None, 0)
+        if old:
+            offset = int(old[-1]["update_id"]) + 1
+        print("report armed", offset)
+    except Exception as exc:
+        print("report drain", exc)
+    while True:
+        try:
+            batch = _tg_updates(offset, 25)
+            for upd in batch:
+                offset = int(upd["update_id"]) + 1
+                msg = upd.get("message") or {}
+                chat = str((msg.get("chat") or {}).get("id", ""))
+                if chat != str(chat_id()):
+                    continue
+                text = str(msg.get("text") or "").strip()
+                cmd = text.split()[0].split("@")[0].lower() if text else ""
+                if cmd == "/report":
+                    telegram_send(moment_report())
+                    print("report sent")
+        except Exception as exc:
+            print("report listen", exc)
+            time.sleep(5)
+
+
+def ensure_listener() -> None:
+    global _LISTENING
+    if _LISTENING or not bot_token() or not chat_id():
+        return
+    _LISTENING = True
+    threading.Thread(target=listen_commands, name="mizan-report", daemon=True).start()
 
 
 def _gauge(hour: Candle, pos: float, hist_now: float, hist_prev: float, bos: str, signal: str, reason: str) -> str:
@@ -1082,7 +1268,7 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
     }
 
 
-def _fit_channel(h4: list[Candle], atr: list[float], i: int):
+def _fit_channel(h4: list[Candle], atr: list[float], i: int, min_span: float = 25.0, tol_floor: float = 8.0, max_outside: int = 1):
     a = atr[i]
     if math.isnan(a) or a <= 0 or i < 20:
         return None
@@ -1109,13 +1295,13 @@ def _fit_channel(h4: list[Candle], atr: list[float], i: int):
             i1, i2 = highs[a1], highs[b1]
             slope = (h4[i2].high - h4[i1].high) / (i2 - i1)
             for j in lows:
-                tol = max(8.0, a * 0.35)
+                tol = max(tol_floor, a * 0.35)
                 ct = cf = outside = 0
                 ok = True
                 for k in range(max(i1, i - 36), i + 1):
                     ceil = h4[i2].high + slope * (k - i2)
                     flor = h4[j].low + slope * (k - j)
-                    if ceil - flor < 25:
+                    if ceil - flor < min_span:
                         ok = False
                         break
                     if abs(h4[k].high - ceil) <= tol:
@@ -1124,7 +1310,7 @@ def _fit_channel(h4: list[Candle], atr: list[float], i: int):
                         cf += 1
                     if h4[k].close > ceil + tol or h4[k].close < flor - tol:
                         outside += 1
-                if not ok or ct < 2 or cf < 2 or outside > 1:
+                if not ok or ct < 2 or cf < 2 or outside > max_outside:
                     continue
                 ceil = h4[i2].high + slope * (i - i2)
                 flor = h4[j].low + slope * (i - j)
@@ -1214,6 +1400,7 @@ def notify_once(state_path: str) -> None:
 
 
 def clock(state_path: str) -> None:
+    ensure_listener()
     if not os.path.exists(state_path):
         sig = once()
         key = f"{sig['time']}|{sig['signal']}"
@@ -1234,7 +1421,14 @@ def clock(state_path: str) -> None:
 
 
 def main() -> None:
+    ensure_listener()
     last_key = ""
+    try:
+        sig = once()
+        last_key = f"{sig['time']}|{sig['signal']}"
+        print("armed", last_key)
+    except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+        print("arm failed", exc)
     print("Mizan bot running. Ctrl+C to stop.")
     while True:
         try:
