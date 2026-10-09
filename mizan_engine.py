@@ -168,6 +168,19 @@ def live_spot() -> float | None:
     return None
 
 
+def crowd_line() -> str | None:
+    """نسبة المتداولين على الذهب. للعرض فقط، لا تدخل في القرار."""
+    url = "https://forexsentimentdata.com/api/history/XAUUSD"
+    try:
+        payload = json.loads(_get(url))
+        last = payload[-1]
+        buy = int(round(float(last["long_pct"])))
+        sell = int(round(float(last["short_pct"])))
+    except (urllib.error.URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return f"الناس: شراء {buy}% · بيع {sell}%"
+
+
 def fetch_hourly() -> list[Candle]:
     url = "https://biquote.io/api/XAUUSD/ohlc?interval=1h&limit=500"
     payload = json.loads(_get(url))
@@ -874,6 +887,8 @@ def format_msg(s: dict) -> str:
         f"القرار 1: {s.get('d1', 'لا قراءة')}",
         f"القرار 2: {s.get('d2', 'لا قراءة')}",
     ]
+    if s.get("crowd"):
+        lines.append(s["crowd"])
     if s["signal"] != "WAIT":
         lines += [
             "",
@@ -1162,8 +1177,9 @@ def allow_send(signal: str, key: str, previous: str) -> bool:
 
 def deliver(sig: dict) -> None:
     sig["live"] = live_spot()
+    sig["crowd"] = crowd_line()
     telegram_send(format_msg(sig))
-    print("sent", sig.get("live"))
+    print("sent", sig.get("live"), sig.get("crowd"))
 
 
 def manual_run() -> bool:
