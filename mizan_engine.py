@@ -43,7 +43,7 @@ NOTIFY_WAIT = True
 # السعر عند 14:00 بتوقيت ألمانيا، والميل بالدولار في اليوم.
 PLAN_ANCHOR_MS = 1791374400000
 PLAN_MARGIN = 2.0
-PLAN_UPPER = (4185.84, -10.62)
+PLAN_UPPER = (4171.65, -17.4)
 PLAN_MID = (4122.95, -11.07)
 PLAN_LOWER = (4072.0, -10.8)
 PLAN_BLUES = (4150.0, 4015.0, 3925.0)
@@ -52,6 +52,26 @@ PLAN_BLUES = (4150.0, 4015.0, 3925.0)
 def _plan_at(spec: tuple[float, float], time_ms: int) -> float:
     price, per_day = spec
     return price + per_day * (time_ms - PLAN_ANCHOR_MS) / 86400000
+
+
+def channel_where(close: float, open_ms: int) -> str:
+    """مكان السعر من القناة كلها، لا من الخط الأخضر وحده."""
+    t = open_ms + 60 * 60 * 1000
+    upper, mid, lower = _plan_at(PLAN_UPPER, t), _plan_at(PLAN_MID, t), _plan_at(PLAN_LOWER, t)
+    span = upper - lower
+    pos = (close - lower) / span if span else 0.5
+    to_up, to_dn, to_mid = upper - close, close - lower, close - mid
+    if abs(to_up) <= PLAN_MARGIN:
+        return f"السعر عند سقف القناة ({upper:.2f})."
+    if abs(to_dn) <= PLAN_MARGIN:
+        return f"السعر عند أرض القناة ({lower:.2f})."
+    if abs(to_mid) <= PLAN_MARGIN:
+        return f"السعر عند الخط الأخضر. تحت السقف بـ {to_up:.2f} وفوق الأرض بـ {to_dn:.2f}."
+    if pos >= 0.66:
+        return f"السعر في أعلى القناة، تحت السقف بـ {to_up:.2f}. السقف {upper:.2f} والأرض {lower:.2f}."
+    if pos <= 0.34:
+        return f"السعر في أسفل القناة، فوق الأرض بـ {to_dn:.2f}. الأرض {lower:.2f} والسقف {upper:.2f}."
+    return f"السعر في وسط القناة. تحت السقف بـ {to_up:.2f} وفوق الأرض بـ {to_dn:.2f}."
 
 
 def midline_lean(high: float, low: float, close: float, open_ms: int) -> str | None:
@@ -121,6 +141,31 @@ def _get(url: str) -> bytes:
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=30) as res:
         return res.read()
+
+
+def live_spot() -> float | None:
+    """سعر سبوت الذهب الآن من تريدينغ فيو، لا إغلاق شمعة سابقة."""
+    body = json.dumps(
+        {
+            "symbols": {"tickers": ["TVC:GOLD", "OANDA:XAUUSD", "FX:XAUUSD"], "query": {"types": []}},
+            "columns": ["close"],
+        }
+    ).encode()
+    req = urllib.request.Request(
+        "https://scanner.tradingview.com/global/scan",
+        data=body,
+        headers={**UA, "Content-Type": "application/json", "Origin": "https://www.tradingview.com"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as res:
+            payload = json.loads(res.read())
+        for row in payload.get("data", []):
+            val = (row.get("d") or [None])[0]
+            if isinstance(val, (int, float)) and 1000 < float(val) < 20000:
+                return round(float(val), 2)
+    except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, ValueError):
+        return None
+    return None
 
 
 def fetch_hourly() -> list[Candle]:
@@ -825,13 +870,14 @@ def format_msg(s: dict) -> str:
         "BARAZZI - XAU",
         "",
         f"الإشارة: {side}",
+        f"السعر الآن: {s.get('live') if s.get('live') is not None else '—'} سبوت",
         f"القرار 1: {s.get('d1', 'لا قراءة')}",
         f"القرار 2: {s.get('d2', 'لا قراءة')}",
     ]
     if s["signal"] != "WAIT":
         lines += [
             "",
-            f"الدخول: {s.get('entry')}",
+            f"إغلاق الشمعة: {s.get('entry')}",
             f"حد الخطر: {s.get('sl')} — لا تخرج فور لمسه",
             "اخرج فقط إذا أغلقت الساعة التالية خلف هذا الحد",
             f"الخروج المقصود: {s.get('tp1')} — حوالي 200 دولار على 0.50 لوت",
@@ -958,9 +1004,7 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
     elif body >= 1.5 and pos >= 0.55 and hour.close < hour.open and hour.close <= candle_mid and hist[h] < hist[h - 1]:
         side = "SELL"
     d1 = {"BUY": "شراء", "SELL": "بيع"}.get(side or "", "لا شراء ولا بيع")
-    line_px = _plan_at(PLAN_MID, hour.time + 60 * 60 * 1000)
-    gap = hour.close - line_px
-    where = f"الإغلاق {'فوق' if gap > 0 else 'تحت'} الخط الأخضر بـ {abs(gap):.2f}."
+    where = channel_where(hour.close, hour.time)
     structure = _bos(hourly, h)
     lean = midline_lean(hour.high, hour.low, hour.close, hour.time)
     gauge = _gauge(hour, pos, hist[h], hist[h - 1], structure, "WAIT", lean or "")
@@ -1117,8 +1161,9 @@ def allow_send(signal: str, key: str, previous: str) -> bool:
 
 
 def deliver(sig: dict) -> None:
+    sig["live"] = live_spot()
     telegram_send(format_msg(sig))
-    print("sent")
+    print("sent", sig.get("live"))
 
 
 def manual_run() -> bool:
