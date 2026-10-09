@@ -475,6 +475,29 @@ def structure_state(h4: list[Candle], i: int) -> dict:
     return {"bos": bos, "bos_at": bos_at, "bos_price": bos_price, "zone": zone, "eq": eq, "hi": hi, "lo": lo}
 
 
+def premium_discount_touch(hourly: list[Candle]) -> str | None:
+    """يُذكر في إشعار الساعة فقط في الساعة التي تلمس فيها الشمعة المنطقة."""
+    if len(hourly) < 100:
+        return None
+    cur, prev = hourly[-1], hourly[-2]
+    window = hourly[-97:-1]
+    hi = max(c.high for c in window)
+    lo = min(c.low for c in window)
+    span = hi - lo
+    if span < 15:
+        return None
+    prem = lo + span * 0.62
+    disc = lo + span * 0.38
+    bits: list[str] = []
+    if cur.high >= prem and prev.high < prem:
+        bits.append(f"بريميوم Premium: شمعة الساعة لمسته. من {prem:.2f} حتى {hi:.2f}.")
+    if cur.low <= disc and prev.low > disc:
+        bits.append(f"ديسكاونت Discount: شمعة الساعة لمسته. من {lo:.2f} حتى {disc:.2f}.")
+    if not bits:
+        return None
+    return " ".join(bits)
+
+
 def parallel_setup(h4: list[Candle], atrs: list[float], i: int) -> dict | None:
     atr = atrs[i]
     if math.isnan(atr) or atr <= 0:
@@ -931,6 +954,8 @@ def format_msg(s: dict) -> str:
         lines.append(s["tf_line"])
     if s["signal"] != "WAIT" and s.get("inval_line"):
         lines.append(s["inval_line"])
+    if s.get("pd_line"):
+        lines.append(s["pd_line"])
     if s["signal"] != "WAIT":
         lines += [
             "",
@@ -1394,6 +1419,7 @@ def once() -> dict:
     h4 = drop_incomplete(resample(hourly, 4 * 60 * 60 * 1000), 4 * 60 * 60 * 1000)
     sig = analyze_hour(h4, hourly)
     sig["_bars"] = (h4, hourly)
+    sig["pd_line"] = premium_discount_touch(hourly)
     return sig
 
 
