@@ -65,13 +65,17 @@ def channel_where(close: float, open_ms: int) -> str:
         return f"السعر عند سقف القناة ({upper:.2f})."
     if abs(to_dn) <= PLAN_MARGIN:
         return f"السعر عند أرض القناة ({lower:.2f})."
+    if close > upper:
+        return f"السعر فوق سقف القناة بـ {abs(to_up):.2f}. السقف {upper:.2f} والأرض {lower:.2f}."
+    if close < lower:
+        return f"السعر تحت أرض القناة بـ {abs(to_dn):.2f}. الأرض {lower:.2f} والسقف {upper:.2f}."
     if abs(to_mid) <= PLAN_MARGIN:
-        return f"السعر عند الخط الأخضر. تحت السقف بـ {to_up:.2f} وفوق الأرض بـ {to_dn:.2f}."
+        return f"السعر عند الخط الأخضر. تحت السقف بـ {abs(to_up):.2f} وفوق الأرض بـ {abs(to_dn):.2f}."
     if pos >= 0.66:
-        return f"السعر في أعلى القناة، تحت السقف بـ {to_up:.2f}. السقف {upper:.2f} والأرض {lower:.2f}."
+        return f"السعر في أعلى القناة، تحت السقف بـ {abs(to_up):.2f}. السقف {upper:.2f} والأرض {lower:.2f}."
     if pos <= 0.34:
-        return f"السعر في أسفل القناة، فوق الأرض بـ {to_dn:.2f}. الأرض {lower:.2f} والسقف {upper:.2f}."
-    return f"السعر في وسط القناة. تحت السقف بـ {to_up:.2f} وفوق الأرض بـ {to_dn:.2f}."
+        return f"السعر في أسفل القناة، فوق الأرض بـ {abs(to_dn):.2f}. الأرض {lower:.2f} والسقف {upper:.2f}."
+    return f"السعر في وسط القناة. تحت السقف بـ {abs(to_up):.2f} وفوق الأرض بـ {abs(to_dn):.2f}."
 
 
 def midline_lean(high: float, low: float, close: float, open_ms: int) -> str | None:
@@ -880,6 +884,21 @@ def _state_line(s: dict) -> str:
     return f"الحالة الآن: {head} {s.get('d2', 'لا قراءة')} القرار الأول قال {s.get('d1', 'لا قراءة')}."
 
 
+def _story_text(s: dict) -> str:
+    """قصة الساعة من mizan_story.py كرسالة ثانية. أي خطأ يرجّع نص فاضي."""
+    try:
+        import mizan_story
+
+        h4, hourly = s.get("_bars") or ([], [])
+        if not h4 or not hourly:
+            return ""
+        text = mizan_story.story_block(h4, hourly, sig=s, live=s.get("live"), eng=sys.modules[__name__])
+        return (text or "").strip()
+    except Exception as exc:
+        print("story skipped", exc)
+        return ""
+
+
 def format_msg(s: dict) -> str:
     side = {"BUY": "شراء BUY", "SELL": "بيع SELL"}.get(s["signal"], "انتظار WAIT")
     lines = [
@@ -1349,7 +1368,9 @@ def _bos(candles: list[Candle], i: int) -> str:
 def once() -> dict:
     hourly = drop_incomplete(fetch_hourly(), 60 * 60 * 1000)
     h4 = drop_incomplete(resample(hourly, 4 * 60 * 60 * 1000), 4 * 60 * 60 * 1000)
-    return analyze_hour(h4, hourly)
+    sig = analyze_hour(h4, hourly)
+    sig["_bars"] = (h4, hourly)
+    return sig
 
 
 def trade_key_of(raw: str) -> str:
@@ -1366,6 +1387,13 @@ def deliver(sig: dict) -> None:
     sig["crowd"] = crowd_line()
     telegram_send(format_msg(sig))
     print("sent", sig.get("live"), sig.get("crowd"))
+    try:
+        story = _story_text(sig)
+        if story:
+            telegram_send(story)
+            print("story sent")
+    except Exception as exc:
+        print("story send failed", exc)
 
 
 def manual_run() -> bool:
