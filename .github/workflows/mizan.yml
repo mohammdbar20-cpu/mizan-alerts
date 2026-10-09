@@ -15,7 +15,9 @@ jobs:
           python-version: "3.12"
       - uses: actions/cache@v4
         with:
-          path: .mizan-state
+          path: |
+            .mizan-state
+            .mizan-state.journal.json
           key: mizan-state-${{ github.run_id }}
           restore-keys: |
             mizan-state-

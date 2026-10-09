@@ -899,6 +899,24 @@ def _story_text(s: dict) -> str:
         return ""
 
 
+def _trust():
+    """mizan_trust.py (results log, timeframe agreement, invalidation). None if missing."""
+    try:
+        import mizan_trust
+
+        return mizan_trust
+    except Exception as exc:
+        print("trust skipped", exc)
+        return None
+
+
+def trust_tick() -> None:
+    """Daily report at 23:00 Berlin, Mon-Fri. Never raises."""
+    trust = _trust()
+    if trust:
+        trust.maybe_daily_report(sys.modules[__name__])
+
+
 def format_msg(s: dict) -> str:
     side = {"BUY": "شراء BUY", "SELL": "بيع SELL"}.get(s["signal"], "انتظار WAIT")
     lines = [
@@ -909,6 +927,10 @@ def format_msg(s: dict) -> str:
         f"القرار 1: {s.get('d1', 'لا قراءة')}",
         f"القرار 2: {s.get('d2', 'لا قراءة')}",
     ]
+    if s.get("tf_line"):
+        lines.append(s["tf_line"])
+    if s["signal"] != "WAIT" and s.get("inval_line"):
+        lines.append(s["inval_line"])
     if s["signal"] != "WAIT":
         lines += [
             "",
@@ -1284,6 +1306,8 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         "d1": d1,
         "d2": f"موافق. {where}",
         "gauge": _gauge(hour, pos, hist[h], hist[h - 1], structure, side, verb),
+        "flor": round(flor, 2),
+        "ceil": round(ceil, 2),
     }
 
 
@@ -1385,8 +1409,13 @@ def allow_send(signal: str, key: str, previous: str) -> bool:
 def deliver(sig: dict) -> None:
     sig["live"] = live_spot()
     sig["crowd"] = crowd_line()
+    trust = _trust()
+    if trust:
+        trust.enrich(sys.modules[__name__], sig)
     telegram_send(format_msg(sig))
     print("sent", sig.get("live"), sig.get("crowd"))
+    if trust:
+        trust.record(sig)
     try:
         story = _story_text(sig)
         if story:
@@ -1425,6 +1454,7 @@ def notify_once(state_path: str) -> None:
         os.makedirs(parent, exist_ok=True)
     with open(state_path, "w", encoding="utf-8") as fh:
         fh.write(key)
+    trust_tick()
 
 
 def clock(state_path: str) -> None:
@@ -1469,6 +1499,7 @@ def main() -> None:
                 last_key = key
         except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
             print("error", exc)
+        trust_tick()
         time.sleep(poll_seconds())
 
 
@@ -1514,5 +1545,8 @@ if __name__ == "__main__":
             main()
         else:
             sig = once()
+            trust = _trust()
+            if trust:
+                trust.enrich(sys.modules[__name__], sig)
             print(format_msg(sig))
             print("\nNo token set — printed once. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to loop.")
