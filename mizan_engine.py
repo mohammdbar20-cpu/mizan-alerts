@@ -933,6 +933,16 @@ def _trust():
         return None
 
 
+def breakout_tick(sig: dict) -> None:
+    """H4 breakout confirmation (mizan_breakout.py) as a 3rd message, only when it happens. Never raises."""
+    try:
+        import mizan_breakout
+
+        mizan_breakout.maybe_alert(sys.modules[__name__], sig)
+    except Exception as exc:
+        print("breakout skipped", exc)
+
+
 def trust_tick() -> None:
     """Daily report at 23:00 Berlin, Mon-Fri. Never raises."""
     trust = _trust()
@@ -999,14 +1009,15 @@ def poll_seconds() -> int:
         return POLL_SECONDS
 
 
-def telegram_send(text: str) -> None:
+def telegram_send(text: str, parse_mode: str | None = None) -> None:
     token, chat = bot_token(), chat_id()
     if not token or not chat:
         raise RuntimeError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    body = json.dumps(
-        {"chat_id": chat, "text": text, "disable_web_page_preview": True}
-    ).encode()
+    payload = {"chat_id": chat, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         url, data=body, headers={**UA, "Content-Type": "application/json"}
     )
@@ -1449,6 +1460,7 @@ def deliver(sig: dict) -> None:
             print("story sent")
     except Exception as exc:
         print("story send failed", exc)
+    breakout_tick(sig)
 
 
 def manual_run() -> bool:

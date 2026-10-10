@@ -332,7 +332,15 @@ def collect_day(eng, now_ms: int | None = None, journal: dict | None = None) -> 
             continue
         out = resolve(r["signal"], float(r["entry"]), float(r["sl"]), float(r["tp"]), int(key) + H1, series, now_ms)
         trades.append({**r, **out})
-    return {"date": d, "trades": trades, "waits": waits, "hours": len(rows), "rebuilt": sum(1 for r in rows.values() if r.get("src") == "rebuilt")}
+    breakouts = []
+    try:  # experimental H4 breakout alerts (mizan_breakout.py), a separate category
+        for r in journal.get("breakouts", {}).values():
+            if start <= int(r.get("sent_at") or 0) < end:
+                out = resolve(r["side"], float(r["entry"]), float(r["sl"]), float(r["tp1"]), int(r["close_ms"]), series, now_ms)
+                breakouts.append({**r, **out})
+    except Exception as exc:
+        print("breakout summary skipped", type(exc).__name__)
+    return {"date": d, "trades": trades, "waits": waits, "hours": len(rows), "rebuilt": sum(1 for r in rows.values() if r.get("src") == "rebuilt"), "breakouts": breakouts}
 
 
 def _sign(v: float) -> str:
@@ -370,6 +378,11 @@ def format_report(day: dict) -> str:
         f"الصافي: {_pts(net)}$ بالأونصة ≈ {_usd(net)} على 0.50 لوت",
         f"نسبة النجاح: {rate}",
     ]
+    bo = day.get("breakouts") or []
+    if bo:
+        bw = sum(1 for t in bo if t.get("result") == "win")
+        bl = sum(1 for t in bo if t.get("result") == "loss")
+        lines.append(f"🧪 كسر القناة على 4 ساعات (تجريبي، منفصل): {len(bo)} — ✅ {bw} • ❌ {bl} • ⏳ {len(bo) - bw - bl} (الهدف 1 = 2R)")
     if trades:
         lines += ["", "التفاصيل:"]
         for t in trades:
