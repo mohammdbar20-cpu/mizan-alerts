@@ -32,6 +32,8 @@ LOT = 0.5  # the size every Mizan message uses
 REPORT_HOUR = 23  # Berlin, gold daily close
 REPORT_GRACE_MIN = 45  # report may go out 23:00-23:44 Berlin (covers a late poll / short restart)
 KEEP_DAYS = 10
+DAYS_KEEP_LOG = 40  # local daily records, enough for one month
+LOG_LOT = 0.01  # durable log uses $ at 0.01 lot
 MIN_GAP = 2.0  # an invalidation level must be at least this far from entry
 AR_DAYS = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
 
@@ -88,6 +90,9 @@ def save_journal(data: dict, path: str | None = None, now_ms: int | None = None)
     data["signals"] = {k: v for k, v in data.get("signals", {}).items() if int(k) >= cutoff}
     keep_dates = {(_berlin(_now_ms(now_ms)) - timedelta(days=d)).date().isoformat() for d in range(KEEP_DAYS)}
     data["reports"] = {k: v for k, v in data.get("reports", {}).items() if k in keep_dates}
+    month_dates = {(_berlin(_now_ms(now_ms)) - timedelta(days=d)).date().isoformat() for d in range(DAYS_KEEP_LOG)}
+    if "days" in data:  # daily result records (fallback for the monthly summary)
+        data["days"] = {k: v for k, v in data["days"].items() if k in month_dates}
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".mizan-journal-", dir=parent)
@@ -414,6 +419,126 @@ def format_report(day: dict) -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------------- durable daily log
+
+def day_record(day: dict) -> dict:
+    """One JSON line per day: every signal + totals (R and $ at 0.01 lot)."""
+    trades = day["trades"]
+    sigs = []
+    for t in trades:
+        risk = abs(float(t["entry"]) - float(t["sl"])) or None
+        r = round(t["pts"] / risk, 2) if risk else 0.0
+        sigs.append({"time": _hm(int(t["time"]) + H1), "dir": t["signal"], "entry": float(t["entry"]),
+                     "sl": float(t["sl"]), "tp": float(t["tp"]), "result": t["result"], "r": r,
+                     "usd": round(t["pts"] * LOG_LOT * 100, 2), "tf": t.get("tf")})
+    wins = sum(1 for t in trades if t["result"] == "win")
+    losses = sum(1 for t in trades if t["result"] == "loss")
+    return {"date": day["date"].date().isoformat(), "signals": sigs, "trades": len(trades), "wins": wins,
+            "losses": losses, "open": len(trades) - wins - losses, "waits": day.get("waits", 0),
+            "net_pts": round(sum(t["pts"] for t in trades), 2), "total_r": round(sum(x["r"] for x in sigs), 2),
+            "usd_001": round(sum(x["usd"] for x in sigs), 2)}
+
+
+class TradeLog:
+    """JSON lines on GitHub branch 'trade-log' (contents API) when MIZAN_LOG_GH_TOKEN is set.
+    That branch is not main, so Render (autodeploy from main) never redeploys because of it."""
+
+    def __init__(self) -> None:
+        self.repo = os.environ.get("MIZAN_LOG_REPO", "mohammdbar20-cpu/mizan-alerts").strip()
+        self.branch = os.environ.get("MIZAN_LOG_BRANCH", "trade-log").strip()
+        self.path = os.environ.get("MIZAN_LOG_PATH", "mizan_trades.jsonl").strip()
+
+    @staticmethod
+    def _tok() -> str:
+        return os.environ.get("MIZAN_LOG_GH_TOKEN", "").strip()
+
+    def _gh(self, method: str, url: str, body: dict | None = None) -> dict:
+        import urllib.request
+        req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body else None,
+                                     headers={"Authorization": f"Bearer {self._tok()}", "User-Agent": "mizan-bot",
+                                              "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read() or b"{}")
+
+    def _gh_get(self) -> tuple[str, str | None]:
+        import base64, urllib.error
+        api = f"https://api.github.com/repos/{self.repo}"
+        try:
+            j = self._gh("GET", f"{api}/contents/{self.path}?ref={self.branch}")
+            return base64.b64decode(j.get("content", "")).decode(), j.get("sha")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+        try:
+            self._gh("GET", f"{api}/branches/{self.branch}")
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+            # branch missing -> orphan commit (no code, no parent) so it can never be deployed
+            tree = self._gh("POST", f"{api}/git/trees", {"tree": [{"path": "README.md", "mode": "100644", "type": "blob",
+                                                                   "content": "Mizan daily results log (data only).\n"}]})
+            commit = self._gh("POST", f"{api}/git/commits", {"message": "trade-log: start", "tree": tree["sha"], "parents": []})
+            self._gh("POST", f"{api}/git/refs", {"ref": f"refs/heads/{self.branch}", "sha": commit["sha"]})
+        return "", None
+
+    def read(self) -> list[dict] | None:
+        """All records, or None when GitHub is not available."""
+        if not self._tok():
+            return None
+        try:
+            txt, _ = self._gh_get()
+            return [json.loads(x) for x in txt.splitlines() if x.strip()]
+        except Exception as e:
+            print("trade log GitHub read failed", type(e).__name__)
+            return None
+
+    def append(self, rec: dict) -> bool:
+        """One record per date (reads the file first). Never raises."""
+        if not self._tok():
+            print("WARNING: MIZAN_LOG_GH_TOKEN not set, GitHub trade log skipped")
+            return False
+        import base64
+        for _ in range(2):  # 409 sha race -> retry once
+            try:
+                txt, sha = self._gh_get()
+                if any(json.loads(x).get("date") == rec["date"] for x in txt.splitlines() if x.strip()):
+                    return True
+                txt += json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n"
+                body = {"message": f"mizan log {rec['date']}", "branch": self.branch,
+                        "content": base64.b64encode(txt.encode()).decode()}
+                if sha:
+                    body["sha"] = sha
+                self._gh("PUT", f"https://api.github.com/repos/{self.repo}/contents/{self.path}", body)
+                return True
+            except Exception as e:
+                print("trade log GitHub write failed", type(e).__name__)
+        return False
+
+
+def last_weekday_of_month(d: datetime) -> bool:
+    x = d.date() + timedelta(days=1)
+    while x.month == d.month:
+        if x.weekday() < 5:
+            return False
+        x += timedelta(days=1)
+    return d.weekday() < 5
+
+
+def monthly_summary(rec: dict, remote: list[dict] | None, local_days: dict) -> str:
+    month = rec["date"][:7]
+    by_date = {r["date"]: r for r in (remote if remote is not None else local_days.values()) if str(r.get("date", "")).startswith(month)}
+    by_date[rec["date"]] = rec
+    rows = list(by_date.values())
+    t = sum(int(r.get("trades", 0)) for r in rows)
+    w = sum(int(r.get("wins", 0)) for r in rows)
+    lo = sum(int(r.get("losses", 0)) for r in rows)
+    tr = round(sum(float(r.get("total_r", 0)) for r in rows), 2)
+    usd = round(sum(float(r.get("usd_001", 0)) for r in rows), 2)
+    src = "" if remote is not None else " (من السجل المحلي)"
+    return (f"🗓️ حصيلة الشهر {month}{src}: {t} صفقة • ✅ {w} • ❌ {lo}\n"
+            f"المجموع: {tr:+.2f}R ≈ {usd:+.2f}$ على 0.01 لوت ({len(rows)} يوم)")
+
+
 def report_due(now_ms: int, journal: dict) -> str | None:
     """Berlin date string if the report should go out now, else None."""
     d = _berlin(now_ms)
@@ -440,7 +565,17 @@ def maybe_daily_report(eng, now_ms: int | None = None, send=None, path: str | No
         key = report_due(now_ms, journal)
         if key is None or key in _SENT:
             return False
-        text = format_report(collect_day(eng, now_ms, journal))
+        day = collect_day(eng, now_ms, journal)
+        text = format_report(day)
+        try:  # durable log + monthly summary must never block the report
+            rec = day_record(day)
+            journal.setdefault("days", {})[rec["date"]] = rec
+            log = TradeLog()
+            log.append(rec)
+            if last_weekday_of_month(day["date"]):
+                text += "\n\n" + monthly_summary(rec, log.read(), journal["days"])
+        except Exception as exc:
+            print("trade log skipped", type(exc).__name__)
         (send or eng.telegram_send)(text)
         _SENT.add(key)
         journal["reports"][key] = now_ms
@@ -453,3 +588,30 @@ def maybe_daily_report(eng, now_ms: int | None = None, send=None, path: str | No
     except Exception as exc:
         print("daily report failed", type(exc).__name__, exc)
         return False
+
+
+# --------------------------------------------------------------- selftest
+
+def selftest() -> None:
+    os.environ.pop("MIZAN_LOG_GH_TOKEN", None)
+    d = datetime(2026, 10, 30, 23, 0, tzinfo=BERLIN)
+    t0 = int(datetime(2026, 10, 30, 9, 0, tzinfo=BERLIN).timestamp() * 1000)
+    day = {"date": d, "waits": 3, "trades": [
+        {"time": t0, "signal": "BUY", "entry": 4000.0, "sl": 3990.0, "tp": 4020.0, "result": "win", "pts": 20.0},
+        {"time": t0 + H1, "signal": "SELL", "entry": 4010.0, "sl": 4015.0, "tp": 4000.0, "result": "loss", "pts": -5.0}]}
+    rec = day_record(day)
+    assert rec["date"] == "2026-10-30" and rec["wins"] == 1 and rec["losses"] == 1
+    assert rec["total_r"] == 1.0 and rec["usd_001"] == 15.0 and rec["signals"][0]["time"] == "10:00"
+    assert TradeLog().append(rec) is False and TradeLog().read() is None  # no token -> skip
+    assert last_weekday_of_month(d) and not last_weekday_of_month(d - timedelta(days=1))
+    assert last_weekday_of_month(datetime(2026, 1, 30, tzinfo=BERLIN))  # Fri; 31st is Saturday
+    old = {"date": "2026-10-29", "trades": 2, "wins": 2, "losses": 0, "total_r": 4.0, "usd_001": 40.0}
+    m = monthly_summary(rec, None, {"2026-10-29": old, "2026-09-30": {**old, "date": "2026-09-30"}})
+    assert "4 صفقة" in m and "+5.00R" in m and "+55.00$" in m and "المحلي" in m, m
+    m2 = monthly_summary(rec, [old, rec], {})
+    assert "المحلي" not in m2 and "+5.00R" in m2
+    print("mizan_trust selftest ok")
+
+
+if __name__ == "__main__":
+    selftest()
