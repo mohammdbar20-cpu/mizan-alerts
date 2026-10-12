@@ -1009,10 +1009,18 @@ def poll_seconds() -> int:
         return POLL_SECONDS
 
 
-def telegram_send(text: str, parse_mode: str | None = None) -> None:
-    token, chat = bot_token(), chat_id()
-    if not token or not chat:
-        raise RuntimeError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+def extra_chat_ids() -> list[str]:
+    raw = os.environ.get("TELEGRAM_EXTRA_CHAT_IDS", "")
+    main = chat_id()
+    out: list[str] = []
+    for part in raw.split(","):
+        cid = part.strip()
+        if cid and cid != main and cid not in out:
+            out.append(cid)
+    return out
+
+
+def _tg_post(token: str, chat: str, text: str, parse_mode: str | None) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat, "text": text, "disable_web_page_preview": True}
     if parse_mode:
@@ -1023,6 +1031,22 @@ def telegram_send(text: str, parse_mode: str | None = None) -> None:
     )
     with urllib.request.urlopen(req, timeout=30) as res:
         res.read()
+
+
+def telegram_send(
+    text: str, parse_mode: str | None = None, main_only: bool = False
+) -> None:
+    token, chat = bot_token(), chat_id()
+    if not token or not chat:
+        raise RuntimeError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+    _tg_post(token, chat, text, parse_mode)
+    if main_only:
+        return
+    for extra in extra_chat_ids():
+        try:
+            _tg_post(token, extra, text, parse_mode)
+        except Exception as exc:  # never break the main send
+            print(f"telegram extra chat {extra} failed: {type(exc).__name__}: {exc}")
 
 
 def _local_where(close: float, flor: float, ceil: float) -> str:
@@ -1193,7 +1217,7 @@ def listen_commands() -> None:
                 text = str(msg.get("text") or "").strip()
                 cmd = text.split()[0].split("@")[0].lower() if text else ""
                 if cmd == "/report":
-                    telegram_send(moment_report())
+                    telegram_send(moment_report(), main_only=True)
                     print("report sent")
         except Exception as exc:
             print("report listen", exc)
