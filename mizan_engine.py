@@ -108,9 +108,9 @@ def plan_veto(side: str, close: float, open_ms: int, bos: str) -> str | None:
         if side == "BUY" and bos == "bullish":
             return None
         return "انتظار. السعر عند أرض قناتك، والشراء يحتاج كسر هيكل صاعد."
-    if close < mid and side == "BUY":
+    if near(mid) and close < mid and side == "BUY":
         return "انتظار. السعر تحت الخط الأخضر ولم يغلق فوقه."
-    if close > mid and side == "SELL":
+    if near(mid) and close > mid and side == "SELL":
         return "انتظار. السعر فوق الخط الأخضر، والخط أرض."
     for level in PLAN_BLUES:
         if not near(level):
