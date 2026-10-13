@@ -56,7 +56,14 @@ _DONE: set[str] = set()  # in-memory guard (decided keys), survives a broken sta
 
 # ------------------------------------------------------------------ config
 
+# Kill switch (user request, 2026-10-13): the alert is OFF regardless of MIZAN_BREAKOUT.
+# Set to True to re-enable; the env var is then honoured as before.
+BREAKOUT_ENABLED = False
+
+
 def enabled() -> bool:
+    if not BREAKOUT_ENABLED:
+        return False
     return os.environ.get("MIZAN_BREAKOUT", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 

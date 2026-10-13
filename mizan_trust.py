@@ -384,7 +384,12 @@ def format_report(day: dict) -> str:
         f"نسبة النجاح: {rate}",
     ]
     bo = day.get("breakouts") or []
-    if bo:
+    try:  # line omitted while the breakout alert is switched off
+        import mizan_breakout
+        bo_on = mizan_breakout.enabled()
+    except Exception:
+        bo_on = False
+    if bo and bo_on:
         bw = sum(1 for t in bo if t.get("result") == "win")
         bl = sum(1 for t in bo if t.get("result") == "loss")
         lines.append(f"🧪 كسر القناة على 4 ساعات (تجريبي، منفصل): {len(bo)} — ✅ {bw} • ❌ {bl} • ⏳ {len(bo) - bw - bl} (الهدف 1 = 2R)")
