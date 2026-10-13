@@ -37,15 +37,14 @@ BER = timezone(timedelta(hours=2))
 def bms(*a):
     return int(datetime(*a, tzinfo=BER).timestamp() * 1000)
 assert e.CHANNEL_ON and e.PLAN_SKIP_WEEKENDS
-assert e.PLAN_NAME == "قناة *"
-assert abs(e._plan_at(e.PLAN_LOWER, bms(2026, 10, 7, 12)) - 4066.33) < 0.01
-assert abs(e._plan_at(e.PLAN_LOWER, bms(2026, 10, 13)) - 4150.65) < 0.01
-assert abs(e.PLAN_LOWER[1] / 6 - 4.015) < 0.001  # per H4 bar
-assert abs(e._plan_at(e.PLAN_UPPER, bms(2026, 10, 9, 4)) - 4207.6) < 0.5
-t = bms(2026, 10, 13, 12)
+assert e.PLAN_NAME == "قناة Grok"
+assert abs(e._plan_at(e.PLAN_LOWER, bms(2026, 9, 29)) - 4112.22) < 0.01
+assert abs(e._plan_at(e.PLAN_LOWER, bms(2026, 10, 7, 16)) - 4094.58) < 0.01
+assert abs(e._plan_at(e.PLAN_UPPER, bms(2026, 10, 12)) - 4213) < 1.5
+t = bms(2026, 10, 13, 11, 40)
 up, mid, lo = (e._plan_at(x, t) for x in (e.PLAN_UPPER, e.PLAN_MID, e.PLAN_LOWER))
-assert abs(up - 4263.8) < 0.5 and abs(lo - 4162.7) < 0.5 and abs(mid - 4213.2) < 0.5, (up, mid, lo)
-assert abs((up - lo) - 101.1) < 0.01 and abs((mid - lo) - 50.55) < 0.01
+assert abs(up - 4211) < 1.5 and abs(lo - 4084) < 1.5 and abs(mid - 4147) < 1.5, (up, mid, lo)
+assert abs((up - lo) - 125.74) < 0.01 and abs((mid - lo) - 62.87) < 0.01
 # weekend: line frozen Sat -> Sun
 assert abs(e._plan_at(e.PLAN_LOWER, bms(2026, 10, 10, 12)) - e._plan_at(e.PLAN_LOWER, bms(2026, 10, 11, 12))) < 1e-9
 FILE_CFG = e._load_levels()
@@ -107,7 +106,7 @@ hourly = load(os.path.join(ROOT, "tests", "fixtures", "h1_20261013.json"))
 sig = run_at(hourly, "2026-10-13T00:00:00+00:00")
 print("replay 03:00:", sig["signal"], "|", sig["reason"], "|", sig["d2"])
 assert abs(sig["close"] - 4157.79) < 0.01, sig["close"]
-assert sig["signal"] != "SELL", sig  # rising channel قناة *: must not SELL
+assert sig["signal"] != "SELL", sig  # descending channel قناة Grok: must not SELL
 # same case on FXCM-like feed (low 4150.68)
 fx = [e.Candle(c.time, c.open, c.high, 4150.68, c.close, 0) if c.time == int(datetime.fromisoformat("2026-10-13T00:00:00+00:00").timestamp() * 1000) else c for c in hourly]
 sig = run_at(fx, "2026-10-13T00:00:00+00:00")

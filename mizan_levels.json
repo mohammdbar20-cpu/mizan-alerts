@@ -6,22 +6,22 @@
     4110.78
   ],
   "channel": {
-    "name": "قناة *",
-    "_src": "TradingView FXCM:XAUUSD H4 rising channel (13 Oct 2026). Lower: 2026-10-07 12:00 Berlin @4066.33 -> 2026-10-13 00:00 Berlin @4150.65 (3.5 trading days); upper = lower+101.1; mid = lower+50.55; +4.015/H4 bar",
-    "anchor_ms": 1791367200000,
+    "name": "قناة Grok",
+    "_src": "TradingView FXCM:XAUUSD H4 descending channel (13 Oct 2026). Lower: 2026-09-29 00:00 Berlin @4112.22 -> 2026-10-07 16:00 Berlin @4094.58; upper = lower+125.74; mid = lower+62.87; -0.441/H4 bar",
+    "anchor_ms": 1790632800000,
     "margin": 2.0,
     "skip_weekends": true,
     "upper": [
-      4167.43,
-      24.0914
+      4237.96,
+      -2.646
     ],
     "mid": [
-      4116.88,
-      24.0914
+      4175.09,
+      -2.646
     ],
     "lower": [
-      4066.33,
-      24.0914
+      4112.22,
+      -2.646
     ]
   }
 }
