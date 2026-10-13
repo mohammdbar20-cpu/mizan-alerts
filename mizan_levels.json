@@ -1,0 +1,5 @@
+{
+  "_note": "User levels. Override with env MIZAN_LEVELS_JSON (JSON text or a file path). channel null = no channel. Channel form: {\"anchor_ms\": <ms>, \"margin\": 2.0, \"upper\": [price, per_day], \"mid\": [price, per_day], \"lower\": [price, per_day]}",
+  "horizontals": [4150.0, 4182.62, 4110.78],
+  "channel": null
+}

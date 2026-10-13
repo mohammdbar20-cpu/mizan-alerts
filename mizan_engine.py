@@ -39,14 +39,56 @@ TELEGRAM_CHAT_ID = ""  # numeric chat id
 POLL_SECONDS = 180
 NOTIFY_WAIT = True
 
-# قناة المستخدم على 4 ساعات، من شارت 7 أكتوبر 2026.
-# السعر عند 14:00 بتوقيت ألمانيا، والميل بالدولار في اليوم.
+# مستويات المستخدم من mizan_levels.json أو من MIZAN_LEVELS_JSON (نص JSON أو مسار ملف).
+# القيم القديمة تبقى احتياطًا لوحدات أخرى، لكن القناة لا تُستعمل إلا إذا جاءت من الإعداد.
 PLAN_ANCHOR_MS = 1791374400000
 PLAN_MARGIN = 2.0
 PLAN_UPPER = (4171.65, -17.4)
 PLAN_MID = (4122.95, -11.07)
 PLAN_LOWER = (4072.0, -10.8)
-PLAN_BLUES = (4150.0, 4015.0, 3925.0)
+PLAN_BLUES = (4150.0, 4182.62, 4110.78)
+CHANNEL_ON = False
+
+
+def _load_levels() -> dict:
+    raw = os.environ.get("MIZAN_LEVELS_JSON", "").strip()
+    try:
+        if raw.startswith("{"):
+            return json.loads(raw)
+        path = raw or os.path.join(os.path.dirname(os.path.abspath(__file__)), "mizan_levels.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: levels config not loaded ({exc}); using built-in user levels, no channel", file=sys.stderr)
+        return {}
+
+
+def apply_levels(cfg: dict) -> None:
+    global PLAN_ANCHOR_MS, PLAN_MARGIN, PLAN_UPPER, PLAN_MID, PLAN_LOWER, PLAN_BLUES, CHANNEL_ON
+    if cfg.get("horizontals"):
+        PLAN_BLUES = tuple(float(x) for x in cfg["horizontals"])
+    ch = cfg.get("channel")
+    CHANNEL_ON = bool(ch)
+    if ch:
+        PLAN_ANCHOR_MS = int(ch["anchor_ms"])
+        PLAN_MARGIN = float(ch.get("margin", 2.0))
+        PLAN_UPPER = (float(ch["upper"][0]), float(ch["upper"][1]))
+        PLAN_LOWER = (float(ch["lower"][0]), float(ch["lower"][1]))
+        m = ch.get("mid") or [(PLAN_UPPER[0] + PLAN_LOWER[0]) / 2, (PLAN_UPPER[1] + PLAN_LOWER[1]) / 2]
+        PLAN_MID = (float(m[0]), float(m[1]))
+
+
+apply_levels(_load_levels())
+
+
+def nearest_line_text(close: float) -> str:
+    """نص محايد: أقرب خط من خطوط المستخدم."""
+    if not PLAN_BLUES:
+        return "لا خطوط محفوظة."
+    lvl = min(PLAN_BLUES, key=lambda x: abs(close - x))
+    d = close - lvl
+    rel = "فوقه" if d > 0 else "تحته" if d < 0 else "عنده"
+    return f"أقرب خط لك {lvl:.2f}، السعر {rel} بـ {abs(d):.2f}."
 
 
 def _plan_at(spec: tuple[float, float], time_ms: int) -> float:
@@ -56,6 +98,8 @@ def _plan_at(spec: tuple[float, float], time_ms: int) -> float:
 
 def channel_where(close: float, open_ms: int) -> str:
     """مكان السعر من القناة كلها، لا من الخط الأخضر وحده."""
+    if not CHANNEL_ON:
+        return nearest_line_text(close)
     t = open_ms + 60 * 60 * 1000
     upper, mid, lower = _plan_at(PLAN_UPPER, t), _plan_at(PLAN_MID, t), _plan_at(PLAN_LOWER, t)
     span = upper - lower
@@ -80,6 +124,8 @@ def channel_where(close: float, open_ms: int) -> str:
 
 def midline_lean(high: float, low: float, close: float, open_ms: int) -> str | None:
     """لمس الخط والإغلاق تحته بقليل: ترجيح هبوط. أي إغلاق فوق الخط اختراق."""
+    if not CHANNEL_ON:
+        return None
     mid = _plan_at(PLAN_MID, open_ms + 60 * 60 * 1000)
     if close > mid:
         return None
@@ -92,26 +138,35 @@ def midline_lean(high: float, low: float, close: float, open_ms: int) -> str | N
     return None
 
 
-def plan_veto(side: str, close: float, open_ms: int, bos: str) -> str | None:
+def plan_veto(side: str, close: float, open_ms: int, bos: str, h4_close: float | None = None) -> str | None:
     """قرار 2. None يعني أن القرار 1 مسموح."""
-    t = open_ms + 60 * 60 * 1000
-    upper, mid, lower = _plan_at(PLAN_UPPER, t), _plan_at(PLAN_MID, t), _plan_at(PLAN_LOWER, t)
 
     def near(level: float) -> bool:
         return abs(close - level) <= PLAN_MARGIN
 
-    if near(upper):
-        if side == "SELL" and bos == "bearish":
-            return None
-        return "انتظار. السعر عند سقف قناتك، والبيع يحتاج كسر هيكل هابط."
-    if near(lower):
-        if side == "BUY" and bos == "bullish":
-            return None
-        return "انتظار. السعر عند أرض قناتك، والشراء يحتاج كسر هيكل صاعد."
-    if near(mid) and close < mid and side == "BUY":
-        return "انتظار. السعر تحت الخط الأخضر ولم يغلق فوقه."
-    if near(mid) and close > mid and side == "SELL":
-        return "انتظار. السعر فوق الخط الأخضر، والخط أرض."
+    if CHANNEL_ON:
+        t = open_ms + 60 * 60 * 1000
+        upper, mid, lower = _plan_at(PLAN_UPPER, t), _plan_at(PLAN_MID, t), _plan_at(PLAN_LOWER, t)
+
+        def inside(x: float | None) -> bool:
+            return x is not None and lower <= x <= upper
+
+        if side == "SELL" and close > upper + PLAN_MARGIN and not inside(h4_close):
+            return f"انتظار. السعر فوق سقف قناتك ({upper:.2f})، لا بيع."
+        if side == "BUY" and close < lower - PLAN_MARGIN and not inside(h4_close):
+            return f"انتظار. السعر تحت أرض قناتك ({lower:.2f})، لا شراء."
+        if near(upper):
+            if side == "SELL" and bos == "bearish":
+                return None
+            return "انتظار. السعر عند سقف قناتك، والبيع يحتاج كسر هيكل هابط."
+        if near(lower):
+            if side == "BUY" and bos == "bullish":
+                return None
+            return "انتظار. السعر عند أرض قناتك، والشراء يحتاج كسر هيكل صاعد."
+        if near(mid) and close < mid and side == "BUY":
+            return "انتظار. السعر تحت الخط الأخضر ولم يغلق فوقه."
+        if near(mid) and close > mid and side == "SELL":
+            return "انتظار. السعر فوق الخط الأخضر، والخط أرض."
     for level in PLAN_BLUES:
         if not near(level):
             continue
@@ -1117,7 +1172,24 @@ def _small_signal(interval: str, period_ms: int, title: str, min_body: float, mi
     elif body >= min_body and pos >= 0.55 and bar.close < bar.open and bar.close <= candle_mid and hist[-1] < hist[-2] and (rsi is None or rsi > 25):
         side = "SELL"
     where = _local_where(bar.close, flor, ceil)
+    buy_ok = body >= 1.5 and pos <= 0.45 and hour.close > hour.open and hour.close >= candle_mid and hist[h] > hist[h - 1]
+    sell_ok = body >= 1.5 and pos >= 0.55 and hour.close < hour.open and hour.close <= candle_mid and hist[h] < hist[h - 1]
+    # آخر شمعة أربع ساعات مغلقة عند إغلاق هذه الساعة
+    h4_closed = [c for c in h4 if c.time + 4 * 3600000 <= hour.time + 3600000]
+    h4_close = h4_closed[-1].close if h4_closed else None
+    guard = None
+    if side is not None:
+        side, guard = sr_guard(side, hour, hourly[:h], h4_close, wilder_atr(hourly, 14)[h], buy_ok, sell_ok)
     d1 = {"BUY": "شراء", "SELL": "بيع"}.get(side or "", "لا شراء ولا بيع")
+    if guard and side is None:
+        empty["time"] = hour.time
+        empty["close"] = round(hour.close, 2)
+        empty["reason"] = guard
+        empty["d1"] = d1
+        empty["d2"] = guard
+        empty["bos"] = _bos(hourly, h)
+        empty["gauge"] = _gauge(hour, pos, hist[h], hist[h - 1], empty["bos"], "WAIT", guard)
+        return empty
     rsi_bit = f" RSI {rsi:.0f}." if rsi is not None else ""
     macd_bit = "ماكد صاعد." if hist[-1] > hist[-2] else "ماكد هابط." if hist[-1] < hist[-2] else "ماكد مسطح."
     bos_bit = {"bullish": " كسر صاعد.", "bearish": " كسر هابط."}.get(structure, "")
@@ -1236,7 +1308,7 @@ def _gauge(hour: Candle, pos: float, hist_now: float, hist_prev: float, bos: str
     mid = _plan_at(PLAN_MID, hour.time + 60 * 60 * 1000)
     candle_mid = (hour.high + hour.low) / 2
     votes = [
-        (3.0, 1 if hour.close > mid else -1 if hour.close < mid else 0),
+        (3.0, 0 if not CHANNEL_ON else 1 if hour.close > mid else -1 if hour.close < mid else 0),
         (2.0, 1 if pos <= 0.45 else -1 if pos >= 0.55 else 0),
         (2.0, 1 if hist_now > hist_prev else -1 if hist_now < hist_prev else 0),
         (2.0, 1 if bos == "bullish" else -1 if bos == "bearish" else 0),
@@ -1262,6 +1334,53 @@ def _gauge(hour: Candle, pos: float, hist_now: float, hist_prev: float, bos: str
         icon = "⚪"
     green = math.ceil(buy / 10) if buy > 50 else math.floor(buy / 10) if buy < 50 else 5
     return f"{icon} ترجيح البيع: {sell}% • ترجيح الشراء: {buy}%\n{'🟩' * green}{'🟥' * (10 - green)}"
+
+
+def _yesterday_hl(prior: list[Candle], open_ms: int) -> tuple[float | None, float | None]:
+    ber = ZoneInfo("Europe/Berlin")
+    today = datetime.fromtimestamp(open_ms / 1000, ber).date()
+    days = sorted({datetime.fromtimestamp(c.time / 1000, ber).date() for c in prior if datetime.fromtimestamp(c.time / 1000, ber).date() < today})
+    if not days:
+        return None, None
+    y = [c for c in prior if datetime.fromtimestamp(c.time / 1000, ber).date() == days[-1]]
+    return min(c.low for c in y), max(c.high for c in y)
+
+
+def sr_guard(side: str, hour: Candle, prior: list[Candle], h4_close: float | None, atr_h1: float,
+             buy_ok: bool, sell_ok: bool) -> tuple[str | None, str | None]:
+    """رفض الكسر الكاذب ومنطقة الدعم/المقاومة. يرجع (الجهة بعد الفحص، السبب إن صار انتظار)."""
+    y_low, y_high = _yesterday_hl(prior, hour.time)
+    zone = max(8.0, 0.5 * atr_h1)
+    touch = max(3.0, 0.2 * atr_h1)  # الفيدات تختلف بحوالي 3 دولارات
+    if side == "SELL":
+        lows = [(l, f"الخط {l:.2f}") for l in PLAN_BLUES] + ([(y_low, f"قاع أمس {y_low:.2f}")] if y_low is not None else [])
+        swept = [name for l, name in lows if l < hour.close and hour.low <= l + touch]
+        if swept:
+            if buy_ok:
+                side = "BUY"
+            else:
+                return None, f"انتظار. الشمعة كسرت {swept[0]} أو لمسته ثم أغلقت فوقه، لا بيع. شروط الشراء غير مكتملة."
+    elif side == "BUY":
+        highs = [(l, f"الخط {l:.2f}") for l in PLAN_BLUES] + ([(y_high, f"قمة أمس {y_high:.2f}")] if y_high is not None else [])
+        swept = [name for l, name in highs if l > hour.close and hour.high >= l - touch]
+        if swept:
+            if sell_ok:
+                side = "SELL"
+            else:
+                return None, f"انتظار. الشمعة تجاوزت {swept[0]} أو لمسته ثم أغلقت تحته، لا شراء. شروط البيع غير مكتملة."
+    if side == "SELL":
+        for l in sorted(PLAN_BLUES, reverse=True):
+            if l <= hour.close and hour.low - l <= zone:
+                broke = hour.close < l - 1 or (h4_close is not None and h4_close < l - 1)
+                if not broke:
+                    return None, f"انتظار. الدعم {l:.2f} قريب، لا بيع قبل إغلاق تحته."
+    elif side == "BUY":
+        for l in sorted(PLAN_BLUES):
+            if l >= hour.close and l - hour.high <= zone:
+                broke = hour.close > l + 1 or (h4_close is not None and h4_close > l + 1)
+                if not broke:
+                    return None, f"انتظار. المقاومة {l:.2f} قريبة، لا شراء قبل إغلاق فوقها."
+    return side, None
 
 
 def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
@@ -1305,7 +1424,24 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         side = "BUY"
     elif body >= 1.5 and pos >= 0.55 and hour.close < hour.open and hour.close <= candle_mid and hist[h] < hist[h - 1]:
         side = "SELL"
+    buy_ok = body >= 1.5 and pos <= 0.45 and hour.close > hour.open and hour.close >= candle_mid and hist[h] > hist[h - 1]
+    sell_ok = body >= 1.5 and pos >= 0.55 and hour.close < hour.open and hour.close <= candle_mid and hist[h] < hist[h - 1]
+    # آخر شمعة أربع ساعات مغلقة عند إغلاق هذه الساعة
+    h4_closed = [c for c in h4 if c.time + 4 * 3600000 <= hour.time + 3600000]
+    h4_close = h4_closed[-1].close if h4_closed else None
+    guard = None
+    if side is not None:
+        side, guard = sr_guard(side, hour, hourly[:h], h4_close, wilder_atr(hourly, 14)[h], buy_ok, sell_ok)
     d1 = {"BUY": "شراء", "SELL": "بيع"}.get(side or "", "لا شراء ولا بيع")
+    if guard and side is None:
+        empty["time"] = hour.time
+        empty["close"] = round(hour.close, 2)
+        empty["reason"] = guard
+        empty["d1"] = d1
+        empty["d2"] = guard
+        empty["bos"] = _bos(hourly, h)
+        empty["gauge"] = _gauge(hour, pos, hist[h], hist[h - 1], empty["bos"], "WAIT", guard)
+        return empty
     where = channel_where(hour.close, hour.time)
     structure = _bos(hourly, h)
     lean = midline_lean(hour.high, hour.low, hour.close, hour.time)
@@ -1326,7 +1462,7 @@ def analyze_hour(h4: list[Candle], hourly: list[Candle]) -> dict:
         empty["bos"] = structure
         empty["gauge"] = _gauge(hour, pos, hist[h], hist[h - 1], structure, "WAIT", "")
         return empty
-    veto = plan_veto(side, hour.close, hour.time, structure)
+    veto = plan_veto(side, hour.close, hour.time, structure, h4_close)
     if veto:
         empty["time"] = hour.time
         empty["close"] = round(hour.close, 2)
