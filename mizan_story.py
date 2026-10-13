@@ -226,7 +226,7 @@ def _build(h4, hourly, sig, live, eng, now_ms):
 
     # ---- channel (user's plan) at candle close
     chan = {}
-    if eng is not None:
+    if eng is not None and getattr(eng, "CHANNEL_ON", True):
         try:
             for kind, spec in (("ceil", eng.PLAN_UPPER), ("mid", eng.PLAN_MID), ("floor", eng.PLAN_LOWER)):
                 chan[kind] = (eng._plan_at(spec, t_cur), eng._plan_at(spec, t_prev), spec)

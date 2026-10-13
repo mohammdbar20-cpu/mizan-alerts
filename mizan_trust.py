@@ -203,7 +203,7 @@ def invalidation(eng, sig: dict) -> tuple[float, str] | None:
         (eng._plan_at(eng.PLAN_MID, t), "الخط الأخضر"),
         (eng._plan_at(eng.PLAN_LOWER, t), "أرض قناتك"),
         (eng._plan_at(eng.PLAN_UPPER, t), "سقف قناتك"),
-    ]
+    ] if getattr(eng, "CHANNEL_ON", True) else []
     cands += [(float(b), "الخط الأزرق") for b in eng.PLAN_BLUES]
     if sig.get("flor") is not None:
         cands.append((float(sig["flor"]), "أرض قناة الـ4 ساعات"))

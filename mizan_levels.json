@@ -1,5 +1,26 @@
 {
-  "_note": "User levels. Override with env MIZAN_LEVELS_JSON (JSON text or a file path). channel null = no channel. Channel form: {\"anchor_ms\": <ms>, \"margin\": 2.0, \"upper\": [price, per_day], \"mid\": [price, per_day], \"lower\": [price, per_day]}",
-  "horizontals": [4150.0, 4182.62, 4110.78],
-  "channel": null
+  "_note": "User levels. Override with env MIZAN_LEVELS_JSON (JSON text or a file path). channel null = no channel. Channel form: {\"anchor_ms\": <ms>, \"margin\": 2.0, \"upper\": [price, per_day], \"mid\": [price, per_day], \"lower\": [price, per_day]} Optional \"skip_weekends\": true = per_day counts trading days (weekend Fri 21:00-Sun 21:00 UTC skipped), matching TradingView H4 bar-space lines.",
+  "horizontals": [
+    4150.0,
+    4182.62,
+    4110.78
+  ],
+  "channel": {
+    "_src": "TradingView FXCM:XAUUSD H4 descending channel (13 Oct 2026). Lower: 2026-09-29 00:00 Berlin @4112.22 -> 2026-10-07 16:00 Berlin @4094.58; upper = lower+125.74; mid = lower+62.87; -0.441/H4 bar",
+    "anchor_ms": 1790632800000,
+    "margin": 2.0,
+    "skip_weekends": true,
+    "upper": [
+      4237.96,
+      -2.646
+    ],
+    "mid": [
+      4175.09,
+      -2.646
+    ],
+    "lower": [
+      4112.22,
+      -2.646
+    ]
+  }
 }

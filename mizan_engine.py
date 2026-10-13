@@ -48,6 +48,7 @@ PLAN_MID = (4122.95, -11.07)
 PLAN_LOWER = (4072.0, -10.8)
 PLAN_BLUES = (4150.0, 4182.62, 4110.78)
 CHANNEL_ON = False
+PLAN_SKIP_WEEKENDS = False  # True: per_day counts trading days only (Fri 21:00 -> Sun 21:00 UTC skipped), like TradingView bar-space lines
 
 
 def _load_levels() -> dict:
@@ -64,7 +65,7 @@ def _load_levels() -> dict:
 
 
 def apply_levels(cfg: dict) -> None:
-    global PLAN_ANCHOR_MS, PLAN_MARGIN, PLAN_UPPER, PLAN_MID, PLAN_LOWER, PLAN_BLUES, CHANNEL_ON
+    global PLAN_ANCHOR_MS, PLAN_MARGIN, PLAN_UPPER, PLAN_MID, PLAN_LOWER, PLAN_BLUES, CHANNEL_ON, PLAN_SKIP_WEEKENDS
     if cfg.get("horizontals"):
         PLAN_BLUES = tuple(float(x) for x in cfg["horizontals"])
     ch = cfg.get("channel")
@@ -72,6 +73,7 @@ def apply_levels(cfg: dict) -> None:
     if ch:
         PLAN_ANCHOR_MS = int(ch["anchor_ms"])
         PLAN_MARGIN = float(ch.get("margin", 2.0))
+        PLAN_SKIP_WEEKENDS = bool(ch.get("skip_weekends", False))
         PLAN_UPPER = (float(ch["upper"][0]), float(ch["upper"][1]))
         PLAN_LOWER = (float(ch["lower"][0]), float(ch["lower"][1]))
         m = ch.get("mid") or [(PLAN_UPPER[0] + PLAN_LOWER[0]) / 2, (PLAN_UPPER[1] + PLAN_LOWER[1]) / 2]
@@ -91,8 +93,21 @@ def nearest_line_text(close: float) -> str:
     return f"أقرب خط لك {lvl:.2f}، السعر {rel} بـ {abs(d):.2f}."
 
 
+_WEEK_MS = 7 * 86400000
+_WKND_START_MS = 45 * 3600000  # Fri 21:00 UTC, measured from Thu 1970-01-01 00:00 UTC
+_WKND_LEN_MS = 48 * 3600000
+
+
+def _trading_ms(t: int) -> int:
+    """Real ms minus all weekend closures (Fri 21:00 -> Sun 21:00 UTC) before t."""
+    weeks, r = divmod(t - _WKND_START_MS, _WEEK_MS)
+    return t - weeks * _WKND_LEN_MS - min(r, _WKND_LEN_MS)
+
+
 def _plan_at(spec: tuple[float, float], time_ms: int) -> float:
     price, per_day = spec
+    if PLAN_SKIP_WEEKENDS:
+        return price + per_day * (_trading_ms(time_ms) - _trading_ms(PLAN_ANCHOR_MS)) / 86400000
     return price + per_day * (time_ms - PLAN_ANCHOR_MS) / 86400000
 
 

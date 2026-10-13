@@ -158,6 +158,8 @@ def _lines(eng, t_ms: int) -> tuple[float, float]:
 
 def find_event(eng, h4: list) -> dict | None:
     """Most recent channel break among the last SCAN_BARS closed H4 candles."""
+    if not getattr(eng, "CHANNEL_ON", True):
+        return None
     n = len(h4)
     for i in range(n - 1, max(0, n - SCAN_BARS) - 1, -1):
         if i < 1:
