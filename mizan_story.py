@@ -124,9 +124,11 @@ def _pick(seed, options):
 
 # ------------------------------------------------------------- levels
 
+_CH_NAME = "القناة"  # set from eng.PLAN_NAME when levels are built
+
 # kind -> (rank for merging/naming, short label, long name)
 _KINDS = {
-    "ceil": (1, "سقف القناة", "سقف القناة الهابطة"),
+    "ceil": (1, "سقف القناة", "سقف القناة"),
     "mid": (2, "الخط الأخضر", "الخط الأخضر (نص القناة)"),
     "floor": (1, "أرض القناة", "أرض القناة"),
     "blue": (3, "الأزرق", "الخط الأزرق"),
@@ -157,7 +159,10 @@ class _Lvl:
             return f"الخط الأزرق {_p(self.price)}"
         if self.kind == "r50":
             return f"الرقم المدوّر {_p(self.price)}"
-        return f"{_KINDS[self.kind][2]} ({_p(self.price)})"
+        nm = _KINDS[self.kind][2]
+        if self.kind in ("ceil", "floor") and _CH_NAME != "القناة":
+            nm = nm.replace("القناة", _CH_NAME)
+        return f"{nm} ({_p(self.price)})"
 
     def tag(self):
         if self.kind in ("blue", "r50"):
@@ -226,6 +231,8 @@ def _build(h4, hourly, sig, live, eng, now_ms):
 
     # ---- channel (user's plan) at candle close
     chan = {}
+    global _CH_NAME
+    _CH_NAME = str(getattr(eng, "PLAN_NAME", "القناة") or "القناة") if eng is not None else "القناة"
     if eng is not None and getattr(eng, "CHANNEL_ON", True):
         try:
             for kind, spec in (("ceil", eng.PLAN_UPPER), ("mid", eng.PLAN_MID), ("floor", eng.PLAN_LOWER)):

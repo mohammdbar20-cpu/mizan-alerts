@@ -48,6 +48,7 @@ PLAN_MID = (4122.95, -11.07)
 PLAN_LOWER = (4072.0, -10.8)
 PLAN_BLUES = (4150.0, 4182.62, 4110.78)
 CHANNEL_ON = False
+PLAN_NAME = "القناة"  # optional channel "name" from mizan_levels.json, used in user-facing text
 PLAN_SKIP_WEEKENDS = False  # True: per_day counts trading days only (Fri 21:00 -> Sun 21:00 UTC skipped), like TradingView bar-space lines
 
 
@@ -65,7 +66,7 @@ def _load_levels() -> dict:
 
 
 def apply_levels(cfg: dict) -> None:
-    global PLAN_ANCHOR_MS, PLAN_MARGIN, PLAN_UPPER, PLAN_MID, PLAN_LOWER, PLAN_BLUES, CHANNEL_ON, PLAN_SKIP_WEEKENDS
+    global PLAN_ANCHOR_MS, PLAN_MARGIN, PLAN_UPPER, PLAN_MID, PLAN_LOWER, PLAN_BLUES, CHANNEL_ON, PLAN_SKIP_WEEKENDS, PLAN_NAME
     if cfg.get("horizontals"):
         PLAN_BLUES = tuple(float(x) for x in cfg["horizontals"])
     ch = cfg.get("channel")
@@ -74,6 +75,7 @@ def apply_levels(cfg: dict) -> None:
         PLAN_ANCHOR_MS = int(ch["anchor_ms"])
         PLAN_MARGIN = float(ch.get("margin", 2.0))
         PLAN_SKIP_WEEKENDS = bool(ch.get("skip_weekends", False))
+        PLAN_NAME = str(ch.get("name") or "القناة")
         PLAN_UPPER = (float(ch["upper"][0]), float(ch["upper"][1]))
         PLAN_LOWER = (float(ch["lower"][0]), float(ch["lower"][1]))
         m = ch.get("mid") or [(PLAN_UPPER[0] + PLAN_LOWER[0]) / 2, (PLAN_UPPER[1] + PLAN_LOWER[1]) / 2]
