@@ -557,6 +557,45 @@ def report_due(now_ms: int, journal: dict) -> str | None:
     return key
 
 
+def _sent_store():
+    """TradeLog pointed at mizan_report_sent.txt (last Berlin date the report went out), or None."""
+    if not TradeLog._tok():
+        return None
+    log = TradeLog()
+    log.path = os.environ.get("MIZAN_REPORT_SENT_PATH", "mizan_report_sent.txt").strip()
+    return log
+
+
+def remote_sent_date() -> str:
+    """Last report date persisted on trade-log ('' if unknown). Survives Render restarts/redeploys."""
+    log = _sent_store()
+    if not log:
+        return ""
+    try:
+        return log._gh_get()[0].strip()
+    except Exception as exc:
+        print("report sent-date read failed", type(exc).__name__)
+        return ""
+
+
+def save_remote_sent_date(key: str) -> None:
+    log = _sent_store()
+    if not log:
+        return
+    import base64
+    for _ in range(2):
+        try:
+            _, sha = log._gh_get()
+            body = {"message": f"mizan report sent {key}", "branch": log.branch,
+                    "content": base64.b64encode((key + "\n").encode()).decode()}
+            if sha:
+                body["sha"] = sha
+            log._gh("PUT", f"https://api.github.com/repos/{log.repo}/contents/{log.path}", body)
+            return
+        except Exception as exc:
+            print("report sent-date write failed", type(exc).__name__)
+
+
 _SENT: set[str] = set()  # in-memory guard: no repeat even if the journal cannot be written
 
 
@@ -569,6 +608,10 @@ def maybe_daily_report(eng, now_ms: int | None = None, send=None, path: str | No
         journal = load_journal(path)
         key = report_due(now_ms, journal)
         if key is None or key in _SENT:
+            return False
+        if remote_sent_date() == key:  # already sent before a restart/redeploy
+            _SENT.add(key)
+            journal.setdefault("reports", {})[key] = now_ms
             return False
         day = collect_day(eng, now_ms, journal)
         text = format_report(day)
@@ -583,7 +626,8 @@ def maybe_daily_report(eng, now_ms: int | None = None, send=None, path: str | No
             print("trade log skipped", type(exc).__name__)
         (send or eng.telegram_send)(text)
         _SENT.add(key)
-        journal["reports"][key] = now_ms
+        save_remote_sent_date(key)
+        journal.setdefault("reports", {})[key] = now_ms
         try:
             save_journal(journal, path, now_ms)
         except OSError as exc:
