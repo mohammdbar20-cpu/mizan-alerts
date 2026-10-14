@@ -23,5 +23,11 @@
       4112.22,
       -2.646
     ]
+  },
+  "touch_alert": {
+    "_note": "INFO-ONLY alert when live price is within threshold $ of channel lower/upper line; once per touch, re-arms after price moves rearm_distance $ away or new H4 bar. Not a trade.",
+    "enabled": true,
+    "threshold": 2.5,
+    "rearm_distance": 8.0
   }
 }

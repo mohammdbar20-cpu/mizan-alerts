@@ -1687,6 +1687,25 @@ def deliver(sig: dict) -> None:
     breakout_tick(sig)
 
 
+def touch_tick() -> None:
+    """INFO-ONLY channel touch alert (mizan_touch.py). Not a trade, not logged. Never raises."""
+    try:
+        import mizan_touch
+        mizan_touch.tick(sys.modules[__name__])
+    except Exception as exc:  # noqa: BLE001
+        print("touch skipped", exc)
+
+
+def _sleep_with_touch(total: float) -> None:
+    end = time.time() + total
+    while True:
+        touch_tick()
+        left = end - time.time()
+        if left <= 0:
+            return
+        time.sleep(min(30, left))
+
+
 def manual_run() -> bool:
     return os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
@@ -1763,7 +1782,7 @@ def main() -> None:
         except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
             print("error", exc)
         trust_tick()
-        time.sleep(poll_seconds())
+        _sleep_with_touch(poll_seconds())
 
 
 class _Health(BaseHTTPRequestHandler):
