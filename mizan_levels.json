@@ -31,11 +31,13 @@
     "rearm_distance": 8.0
   },
   "premium_discount": {
-    "_note": "INFO-ONLY H4 ICT premium/discount alert, once per closed H4 bar. Range = latest fractal swing high/low (pivot bars each side) in last lookback H4 bars, extended to extremes made after them. Not a trade.",
+    "_note": "INFO-ONLY H4 premium/discount alert reproducing LuxAlgo 'Smart Money Concepts' Premium & Discount Zones: range = trailing swing top/bottom (leg detection with swing_length bars), deep premium >= premium_zone %, deep discount <= discount_zone %, equilibrium 50 +/- eq_band %. Native 4h bars (fetch_limit), needs min_bars closed bars. Once per closed H4 bar. Not a trade.",
     "enabled": true,
-    "lookback": 48,
-    "pivot": 3,
-    "deep_premium": 75.0,
-    "deep_discount": 25.0
+    "swing_length": 50,
+    "min_bars": 150,
+    "fetch_limit": 500,
+    "premium_zone": 95.0,
+    "discount_zone": 5.0,
+    "eq_band": 2.5
   }
 }

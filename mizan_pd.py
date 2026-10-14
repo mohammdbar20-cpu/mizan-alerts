@@ -1,23 +1,32 @@
-"""mizan_pd — INFO-ONLY H4 Premium/Discount alert (ICT). Not a trade: no buy/sell, not logged,
+"""mizan_pd — INFO-ONLY H4 Premium/Discount alert. Not a trade: no buy/sell, not logged,
 not in results, does not touch decision logic.
 
-Method (documented):
-  * H4 bars = Mizan's own H4: hourly bars resampled on epoch-aligned 4h buckets
-    (e.resample + e.drop_incomplete), i.e. the same boundaries as the engine/touch alert.
-  * Window = last `lookback` CLOSED H4 bars (default 48 ≈ 8 trading days).
-  * Swings = fractal pivots via e.confirmed_swings(left=pivot, right=pivot), pivot default 3
-    (a bar whose high/low is strictly beyond the 3 bars each side; confirmed 3 bars later).
-  * Dealing range high = most recent confirmed swing high, extended to the highest high made
-    after it (so a break above re-anchors the range to the new extreme); low likewise.
-    Fallback when no pivot exists in the window: window max high / min low.
-  * Equilibrium = 50%. pct = (close-low)/(high-low)*100 using the closed bar's close.
-    pct >= deep_premium -> deep premium (OTE), > 50 premium, < 50 discount,
-    <= deep_discount -> deep discount.
+Method: reproduces the "Premium & Discount Zones" of LuxAlgo's open-source TradingView
+indicator "Smart Money Concepts [LuxAlgo]" (Pine v5) on H4:
+  * H4 bars = native 4h XAUUSD bars from Mizan's feed (e.fetch_bars("4h", fetch_limit)),
+    epoch-aligned 4h buckets (same boundaries as e.resample), incomplete bar dropped.
+    The hourly feed only returns ~170 bars (~42 H4), too short; the 4h feed gives ~180.
+  * leg(size): at bar t, if high[t-size] > highest(high[t-size+1..t]) -> bearish leg (0);
+    elif low[t-size] < lowest(low[t-size+1..t]) -> bullish leg (1); else unchanged.
+    size = swing_length (LuxAlgo "Swings" length, default 50).
+  * leg change to bearish -> swing high at bar t-size: trailing.top = high[t-size];
+    leg change to bullish -> swing low: trailing.bottom = low[t-size].
+  * updateTrailingExtremes (run each bar before structure, as in Pine):
+    trailing.top = max(high, top), trailing.bottom = min(low, bottom).
+  * Limited history (~180 H4 bars vs TradingView's full chart): the first detected leg counts
+    as a new leg (registers its pivot); an extreme with no pivot inside our history falls back
+    to the max high / min low of all fetched bars (= Pine's value when the older pivot is
+    beyond that extreme, which is the case whenever price has since traded past it).
+  * Zones (Pine drawPremiumDiscountZones): premium = top .. 0.95*top+0.05*bottom,
+    equilibrium = 0.525*top+0.475*bottom .. 0.475*top+0.525*bottom, discount = 0.05 band at bottom.
+  * pct = (close-bottom)/(top-bottom)*100 on the last closed H4 bar.
+    pct >= premium_zone (95) -> بريميوم عميق; <= discount_zone (5) -> ديسكاونت عميق;
+    within eq band (47.5..52.5) -> التوازن; else > 50 بريميوم / < 50 ديسكاونت.
 Sent once per closed H4 bar; last-sent bar persisted on trade-log branch
-(mizan_pd_state.json, env MIZAN_PD_STATE_PATH). Night sending allowed. Never raises.
+(mizan_pd_state.json, env MIZAN_PD_STATE_PATH). Never raises.
 
-Config (mizan_levels.json): "premium_discount": {"enabled", "lookback", "pivot",
-"deep_premium", "deep_discount"}
+Config (mizan_levels.json) "premium_discount": {"enabled", "swing_length", "min_bars",
+"fetch_limit", "premium_zone", "discount_zone", "eq_band"}
 """
 from __future__ import annotations
 
@@ -32,32 +41,55 @@ def settings(cfg: dict) -> dict:
     t = (cfg or {}).get("premium_discount") or {}
     return {
         "enabled": bool(t.get("enabled", False)),
-        "lookback": int(t.get("lookback", 48)),
-        "pivot": int(t.get("pivot", 3)),
-        "deep_premium": float(t.get("deep_premium", 75.0)),
-        "deep_discount": float(t.get("deep_discount", 25.0)),
+        "swing_length": int(t.get("swing_length", 50)),
+        "min_bars": int(t.get("min_bars", 150)),
+        "fetch_limit": int(t.get("fetch_limit", 500)),
+        "premium_zone": float(t.get("premium_zone", 95.0)),
+        "discount_zone": float(t.get("discount_zone", 5.0)),
+        "eq_band": float(t.get("eq_band", 2.5)),
     }
+
+
+def trailing_extremes(h4: list, size: int):
+    """LuxAlgo SMC swing structure + trailing extremes. Returns (bottom, top) or None."""
+    top = bottom = None
+    leg = None  # unknown until first leg (Pine has long history; we only have ~180 bars)
+    for t, c in enumerate(h4):
+        if top is not None:
+            top = max(c.high, top)
+        if bottom is not None:
+            bottom = min(c.low, bottom)
+        if t < size:
+            continue
+        p = h4[t - size]
+        nxt = h4[t - size + 1:t + 1]
+        new = leg
+        if p.high > max(x.high for x in nxt):
+            new = 0
+        elif p.low < min(x.low for x in nxt):
+            new = 1
+        if new is not None and new != leg:
+            if new == 0:
+                top = p.high
+            else:
+                bottom = p.low
+        leg = new
+    # Extreme whose swing pivot lies before our history: Pine's value = min/max of that older
+    # pivot and every bar since, approximated by the extreme of all available bars.
+    if top is None:
+        top = max(c.high for c in h4)
+    if bottom is None:
+        bottom = min(c.low for c in h4)
+    if top - bottom <= 0:
+        return None
+    return bottom, top
 
 
 def dealing_range(e, h4: list, conf: dict):
     """h4 = closed H4 candles. Returns (low, high) or None."""
-    win = h4[-conf["lookback"]:]
-    if len(win) < 2 * conf["pivot"] + 2:
+    if len(h4) < max(conf["min_bars"], conf["swing_length"] + 2):
         return None
-    highs, lows = e.confirmed_swings(win, conf["pivot"], conf["pivot"])
-    if highs:
-        s = highs[-1]
-        hi = max(c.high for c in win[s.index:])
-    else:
-        hi = max(c.high for c in win)
-    if lows:
-        s = lows[-1]
-        lo = min(c.low for c in win[s.index:])
-    else:
-        lo = min(c.low for c in win)
-    if hi - lo <= 0:
-        return None
-    return lo, hi
+    return trailing_extremes(h4, conf["swing_length"])
 
 
 def reading(e, h4: list, conf: dict) -> dict | None:
@@ -67,22 +99,22 @@ def reading(e, h4: list, conf: dict) -> dict | None:
     lo, hi = r
     price = h4[-1].close
     pct = (price - lo) / (hi - lo) * 100.0
-    if pct >= conf["deep_premium"]:
-        zone = "بريميوم عميق (OTE)"
+    if pct >= conf["premium_zone"]:
+        zone = "بريميوم عميق"
+    elif pct <= conf["discount_zone"]:
+        zone = "ديسكاونت عميق"
+    elif abs(pct - 50) <= conf["eq_band"]:
+        zone = "التوازن"
     elif pct > 50:
         zone = "بريميوم"
-    elif pct <= conf["deep_discount"]:
-        zone = "ديسكاونت عميق (OTE)"
-    elif pct < 50:
-        zone = "ديسكاونت"
     else:
-        zone = "التوازن"
+        zone = "ديسكاونت"
     return {"bar": h4[-1].time, "price": price, "low": lo, "high": hi,
             "eq": (lo + hi) / 2, "pct": pct, "zone": zone}
 
 
 def message(r: dict) -> str:
-    return (f"🕐 معلومة 4 ساعات: السعر {r['price']:.0f} بمنطقة {r['zone']} ({r['pct']:.0f}%) — "
+    return (f"🕐 معلومة 4 ساعات (حسب مؤشر SMC): السعر {r['price']:.0f} بمنطقة {r['zone']} ({r['pct']:.0f}%) — "
             f"المدى من {r['low']:.0f} لـ {r['high']:.0f}، التوازن {r['eq']:.0f}. "
             "هاد تنبيه للمتابعة مش إشارة شراء/بيع.")
 
@@ -174,7 +206,7 @@ def tick(e) -> None:
         last_closed = int(time.time() * 1000) // H4_MS * H4_MS - H4_MS
         if _STATE.get("bar") is not None and _STATE["bar"] >= last_closed:
             return
-        h4 = e.drop_incomplete(e.resample(e.fetch_hourly(), H4_MS), H4_MS)
+        h4 = e.drop_incomplete(e.fetch_bars("4h", conf["fetch_limit"]), H4_MS)
         if not h4 or h4[-1].time < last_closed:
             return  # data for the just-closed bar not in yet; retry next tick
         msgs, changed = step(e, _STATE, h4, conf)
