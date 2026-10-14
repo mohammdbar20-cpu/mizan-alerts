@@ -1,1 +1,1 @@
-{"lower": {"armed": false, "bar": 1791993600000, "line": 4081.13, "price": 4080.66, "at": 1791993614011}, "upper": {"armed": true, "bar": 0}}
+{"lower": {"armed": true, "bar": 1791993600000}, "upper": {"armed": true, "bar": 0}}
