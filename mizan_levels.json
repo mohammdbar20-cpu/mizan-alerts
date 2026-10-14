@@ -29,5 +29,13 @@
     "enabled": true,
     "threshold": 2.5,
     "rearm_distance": 8.0
+  },
+  "premium_discount": {
+    "_note": "INFO-ONLY H4 ICT premium/discount alert, once per closed H4 bar. Range = latest fractal swing high/low (pivot bars each side) in last lookback H4 bars, extended to extremes made after them. Not a trade.",
+    "enabled": true,
+    "lookback": 48,
+    "pivot": 3,
+    "deep_premium": 75.0,
+    "deep_discount": 25.0
   }
 }

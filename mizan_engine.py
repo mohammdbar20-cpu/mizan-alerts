@@ -1694,6 +1694,11 @@ def touch_tick() -> None:
         mizan_touch.tick(sys.modules[__name__])
     except Exception as exc:  # noqa: BLE001
         print("touch skipped", exc)
+    try:
+        import mizan_pd
+        mizan_pd.tick(sys.modules[__name__])
+    except Exception as exc:  # noqa: BLE001
+        print("pd skipped", exc)
 
 
 def _sleep_with_touch(total: float) -> None:
