@@ -1617,7 +1617,54 @@ def trade_key_of(raw: str) -> str:
 
 def allow_send(signal: str, key: str, previous: str) -> bool:
     previous = trade_key_of(previous)
-    return bool(key) and key != previous
+    if key and key == previous:
+        return False
+    if signal != "WAIT":
+        return True
+    if not notify_wait():
+        return False
+    if not previous:
+        return True
+    return previous.rsplit("|", 1)[-1] != "WAIT"
+
+
+def _sent_store():
+    """Last sent key on branch trade-log (file mizan_last_sent.txt) so WAIT suppression survives restarts."""
+    trust = _trust()
+    if not trust or not trust.TradeLog._tok():
+        return None
+    log = trust.TradeLog()
+    log.path = os.environ.get("MIZAN_LAST_SENT_PATH", "mizan_last_sent.txt").strip()
+    return log
+
+
+def load_last_sent() -> str:
+    log = _sent_store()
+    if not log:
+        return ""
+    try:
+        return log._gh_get()[0].strip()
+    except Exception as e:
+        print("last-sent read failed", type(e).__name__)
+        return ""
+
+
+def save_last_sent(key: str) -> None:
+    log = _sent_store()
+    if not log:
+        return
+    import base64
+    try:
+        txt, sha = log._gh_get()
+        if txt.strip() == key:
+            return
+        body = {"message": "mizan last sent", "branch": log.branch,
+                "content": base64.b64encode((key + "\n").encode()).decode()}
+        if sha:
+            body["sha"] = sha
+        log._gh("PUT", f"https://api.github.com/repos/{log.repo}/contents/{log.path}", body)
+    except Exception as e:
+        print("last-sent write failed", type(e).__name__)
 
 
 def deliver(sig: dict) -> None:
@@ -1698,7 +1745,7 @@ def main() -> None:
     last_key = ""
     try:
         sig = once()
-        last_key = f"{sig['time']}|{sig['signal']}"
+        last_key = load_last_sent() or f"{sig['time']}|{sig['signal']}"
         print("armed", last_key)
     except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
         print("arm failed", exc)
@@ -1712,6 +1759,7 @@ def main() -> None:
             if should:
                 deliver(sig)
                 last_key = key
+                save_last_sent(key)
         except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
             print("error", exc)
         trust_tick()

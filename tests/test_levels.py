@@ -118,4 +118,15 @@ e.apply_levels({"channel": None})
 assert mb.find_event(e, [C(4000, 4500, 3900, 4400, i * 4 * H1) for i in range(10)]) is None
 e.apply_levels(FILE_CFG)
 assert e.CHANNEL_ON
+# 6) consecutive WAIT suppression (restored); BUY/SELL always send on new bar
+os.environ["NOTIFY_WAIT"] = "true"
+assert e.allow_send("WAIT", "200|WAIT", "100|WAIT") is False
+assert e.allow_send("WAIT", "200|WAIT", "100|WAIT|zone=x") is False
+assert e.allow_send("WAIT", "200|WAIT", "100|BUY") is True
+assert e.allow_send("BUY", "200|BUY", "100|WAIT") is True
+assert e.allow_send("SELL", "200|SELL", "100|SELL") is True
+assert e.allow_send("WAIT", "200|WAIT", "") is True
+assert e.allow_send("BUY", "200|BUY", "200|BUY") is False
+os.environ.pop("MIZAN_LOG_GH_TOKEN", None)
+assert e.load_last_sent() == ""
 print("ALL LEVEL TESTS PASSED")
