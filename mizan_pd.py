@@ -142,6 +142,26 @@ def save_state(e, state: dict) -> None:
         print("pd state write failed", type(exc).__name__)
 
 
+def send(e, text: str) -> str:
+    """Send via the SMC bot (SMC_BOT_TOKEN) to Mizan's chat ids; fall back to Mizan's bot if unset."""
+    import os
+    tok = os.environ.get("SMC_BOT_TOKEN", "").strip()
+    if not tok:
+        e.telegram_send(text)
+        return "mizan"
+    chats = [e.chat_id()] + [c for c in e.extra_chat_ids() if c]
+    ok = 0
+    for c in [c for c in chats if c]:
+        try:
+            e._tg_post(tok, c, text, None)
+            ok += 1
+        except Exception as exc:
+            print("pd smc send failed", type(exc).__name__)
+    if not ok:
+        raise RuntimeError("SMC bot send failed")
+    return "smc"
+
+
 def tick(e) -> None:
     """Called from Mizan's loop (every ~30s). Fetches bars only when a new H4 bar has closed."""
     global _STATE
@@ -160,8 +180,7 @@ def tick(e) -> None:
         msgs, changed = step(e, _STATE, h4, conf)
         for m in msgs:
             try:
-                e.telegram_send(m)
-                print("pd info sent")
+                print("pd info sent via", send(e, m))
             except Exception as exc:
                 print("pd send failed", type(exc).__name__)
         if changed:
