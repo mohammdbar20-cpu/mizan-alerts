@@ -70,8 +70,74 @@ def journal_path() -> str:
     return os.environ.get("MIZAN_STATE", ".mizan-state").strip() + ".journal.json"
 
 
-def load_journal(path: str | None = None) -> dict:
-    path = path or journal_path()
+def _journal_store():
+    """TradeLog pointed at mizan_journal.json on trade-log, or None (no token)."""
+    if not TradeLog._tok():
+        return None
+    log = TradeLog()
+    log.path = os.environ.get("MIZAN_JOURNAL_GH_PATH", "mizan_journal.json").strip()
+    return log
+
+
+_REMOTE_TRIED: set[str] = set()  # restore from trade-log at most once per journal path per process
+_REMOTE_PUSHED: dict[str, str] = {}  # path -> fingerprint of the last journal content pushed
+
+
+def _fingerprint(data: dict) -> str:
+    keys = ("signals", "reports", "days", "breakouts")
+    return json.dumps({k: data.get(k) for k in keys}, sort_keys=True, ensure_ascii=False)
+
+
+def _remote_journal() -> dict | None:
+    log = _journal_store()
+    if not log:
+        return None
+    try:
+        txt = log._gh_get()[0]
+        data = json.loads(txt) if txt.strip() else None
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        print("journal GitHub read failed", type(exc).__name__)
+        return None
+
+
+def _merge(local: dict, remote: dict) -> dict:
+    for k in ("signals", "reports", "days", "breakouts"):
+        r = remote.get(k)
+        if isinstance(r, dict):
+            local[k] = {**r, **local.get(k, {})}
+    return local
+
+
+def _has_today(data: dict) -> bool:
+    start, end, _ = day_bounds(_now_ms())
+    return any(start <= int(k) < end for k in data.get("signals", {}))
+
+
+def _push_remote(data: dict, path: str) -> None:
+    """Mirror the journal to trade-log, only when its content changed. Never raises."""
+    fp = _fingerprint(data)
+    if _REMOTE_PUSHED.get(path) == fp:
+        return
+    log = _journal_store()
+    if not log:
+        return
+    import base64
+    for _ in range(2):  # 409 sha race -> retry once
+        try:
+            _, sha = log._gh_get()
+            body = {"message": f"mizan journal {_berlin(_now_ms()).date().isoformat()}", "branch": log.branch,
+                    "content": base64.b64encode(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()).decode()}
+            if sha:
+                body["sha"] = sha
+            log._gh("PUT", f"https://api.github.com/repos/{log.repo}/contents/{log.path}", body)
+            _REMOTE_PUSHED[path] = fp
+            return
+        except Exception as exc:
+            print("journal GitHub write failed", type(exc).__name__)
+
+
+def _load_local(path: str) -> dict | None:
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -81,6 +147,22 @@ def load_journal(path: str | None = None) -> dict:
             return data
     except (OSError, ValueError):
         pass
+    return None
+
+
+def load_journal(path: str | None = None) -> dict:
+    path = path or journal_path()
+    data = _load_local(path)
+    if path not in _REMOTE_TRIED and (data is None or not _has_today(data)):
+        _REMOTE_TRIED.add(path)  # local missing / other day (fresh Render instance): restore from trade-log
+        remote = _remote_journal()
+        if remote:
+            data = _merge(data or {"version": 1, "signals": {}, "reports": {}}, remote)
+            data.setdefault("signals", {})
+            data.setdefault("reports", {})
+            _REMOTE_PUSHED[path] = _fingerprint(data)
+    if data is not None:
+        return data
     return {"version": 1, "signals": {}, "reports": {}}
 
 
@@ -103,6 +185,7 @@ def save_journal(data: dict, path: str | None = None, now_ms: int | None = None)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+    _push_remote(data, path)
 
 
 def _row(sig: dict, src: str) -> dict:
